@@ -1,0 +1,341 @@
+{% extends "base.html" %}
+{% block title %}Transações · Finanças{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>💸 Transações</h1>
+  <button class="btn" onclick="openTransaction()">+ Nova transação</button>
+</div>
+
+<div class="card" style="margin-bottom:16px;">
+  <h2>📷 Ler extrato com IA (print)</h2>
+  <p class="muted" style="margin-bottom:12px;">
+    Envie um <b>print/screenshot do extrato bancário</b> (PNG/JPG/PDF). A IA lê as
+    movimentações, mostra uma <b>nota com o que foi detectado</b> e você confirma
+    para lançar como transações na conta escolhida.
+  </p>
+  <div class="toolbar" style="margin-bottom:8px;">
+    <input type="file" id="ai-file" accept="image/*,.pdf,.png,.jpg,.jpeg,.webp">
+    <select id="ai-account"><option value="">(sem conta)</option></select>
+    <button class="btn" onclick="aiExtract()" id="btn-ai">📷 Ler extrato</button>
+    <span class="muted" id="ai-status"></span>
+  </div>
+  <div id="ai-result"></div>
+</div>
+
+<div class="toolbar">
+  <label class="muted">Mês:</label>
+  <input type="month" id="filter-month">
+  <label class="muted">Tipo:</label>
+  <select id="filter-type">
+    <option value="">Todos</option>
+    <option value="expense">Despesas</option>
+    <option value="income">Receitas</option>
+  </select>
+</div>
+
+<div class="grid cols-3" id="tx-summary" style="margin-bottom:16px;"></div>
+
+<div class="card">
+  <table>
+    <thead><tr><th>Data</th><th>Descrição</th><th>Cat.</th><th>Conta</th><th class="num">Valor</th><th></th></tr></thead>
+    <tbody id="tx-body"></tbody>
+  </table>
+</div>
+
+<div class="modal-backdrop" id="tx-modal">
+  <div class="modal">
+    <button class="close" onclick="closeModal('tx-modal')">&times;</button>
+    <h3 id="tx-modal-title">Nova transação</h3>
+    <form id="tx-form">
+      <input type="hidden" id="f-id">
+      <label>Descrição</label>
+      <input id="f-description" required>
+      <div class="form-grid">
+        <div>
+          <label>Data</label>
+          <input id="f-date" type="date" required>
+        </div>
+        <div>
+          <label>Tipo</label>
+          <select id="f-type">
+            <option value="expense">Despesa</option>
+            <option value="income">Receita</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-grid">
+        <div>
+          <label>Valor (R$)</label>
+          <input id="f-amount" type="number" step="0.01" min="0" value="0" required>
+        </div>
+        <div>
+          <label>Categoria</label>
+          <select id="f-category"></select>
+        </div>
+      </div>
+      <div class="form-grid">
+        <div>
+          <label>Conta</label>
+          <select id="f-account"><option value="">(sem conta)</option></select>
+        </div>
+        <div>
+          <label>Método</label>
+          <select id="f-method"><option>Conta</option><option>Cartão</option><option>Pix</option><option>Dinheiro</option></select>
+        </div>
+      </div>
+      <div class="form-actions">
+        <button type="button" class="btn ghost" onclick="closeModal('tx-modal')">Cancelar</button>
+        <button type="submit" class="btn">Salvar</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let state = { accounts: [], categories: [], all: [], month: currentMonth(), type: "" };
+
+async function load() {
+  const [txs, accounts, meta] = await Promise.all([
+    api("/api/transactions"), api("/api/accounts"), api("/api/meta"),
+  ]);
+  state = { ...state, accounts, categories: meta.categories, all: txs };
+
+  const catSelect = document.getElementById("f-category");
+  catSelect.innerHTML = meta.categories.map((c) => `<option>${c}</option>`).join("");
+  const accSelect = document.getElementById("f-account");
+  accSelect.innerHTML = `<option value="">(sem conta)</option>` +
+    accounts.map((a) => `<option value="${a.id}">${escapeHtml(a.name)}</option>`).join("");
+
+  renderSummary();
+  renderTable();
+}
+
+function filtered() {
+  return state.all.filter((t) => {
+    const m = (t.date || "").slice(0, 7);
+    if (state.month && m !== state.month) return false;
+    if (state.type && t.type !== state.type) return false;
+    return true;
+  }).sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+}
+
+function renderSummary() {
+  const list = filtered();
+  const income = list.filter((t) => t.type === "income").reduce((s, t) => s + Number(t.amount), 0);
+  const expense = list.filter((t) => t.type === "expense").reduce((s, t) => s + Number(t.amount), 0);
+  document.getElementById("tx-summary").innerHTML = `
+    <div class="card kpi"><div class="label">Lançamentos</div><div class="value text-accent">${list.length}</div></div>
+    <div class="card kpi"><div class="label">Receitas</div><div class="value text-green">${fmt(income)}</div></div>
+    <div class="card kpi"><div class="label">Despesas</div><div class="value text-red">${fmt(expense)}</div></div>`;
+}
+
+function renderTable() {
+  const list = filtered();
+  const body = document.getElementById("tx-body");
+  if (!list.length) {
+    body.innerHTML = `<tr><td colspan="6" class="empty">Nenhuma transação neste filtro.</td></tr>`;
+    return;
+  }
+  body.innerHTML = list.map((t) => {
+    const acc = state.accounts.find((a) => a.id === t.account_id);
+    const isIncome = t.type === "income";
+    return `<tr>
+      <td>${fmtDate(t.date)}</td>
+      <td>${escapeHtml(t.description)}</td>
+      <td><span class="tag">${escapeHtml(t.category || "Outros")}</span></td>
+      <td class="muted">${acc ? escapeHtml(acc.name) : escapeHtml(t.method || "—")}</td>
+      <td class="num ${isIncome ? "text-green" : "text-red"}">${isIncome ? "+" : "−"}${fmt(t.amount)}</td>
+      <td class="row-actions">
+        <button class="btn ghost small" onclick="editTx('${t.id}')">Editar</button>
+        <button class="btn danger small" onclick="delTx('${t.id}')">Excluir</button>
+      </td>
+    </tr>`;
+  }).join("");
+}
+
+function openTransaction() {
+  document.getElementById("tx-modal-title").textContent = "Nova transação";
+  document.getElementById("f-id").value = "";
+  document.getElementById("f-description").value = "";
+  document.getElementById("f-date").value = todayISO();
+  document.getElementById("f-type").value = "expense";
+  document.getElementById("f-amount").value = "";
+  document.getElementById("f-category").value = "Outros";
+  document.getElementById("f-account").value = "";
+  document.getElementById("f-method").value = "Conta";
+  openModal("tx-modal");
+}
+
+function editTx(id) {
+  const t = state.all.find((x) => x.id === id);
+  document.getElementById("tx-modal-title").textContent = "Editar transação";
+  document.getElementById("f-id").value = t.id;
+  document.getElementById("f-description").value = t.description || "";
+  document.getElementById("f-date").value = t.date || todayISO();
+  document.getElementById("f-type").value = t.type === "income" ? "income" : "expense";
+  document.getElementById("f-amount").value = t.amount ?? 0;
+  document.getElementById("f-category").value = t.category || "Outros";
+  document.getElementById("f-account").value = t.account_id || "";
+  document.getElementById("f-method").value = t.method || "Conta";
+  openModal("tx-modal");
+}
+
+async function delTx(id) {
+  if (!confirmDelete()) return;
+  try {
+    await delWithForce(`/api/transactions/${id}`);
+    toast("Transação excluída");
+  } catch (err) {
+    toast(err.message, true);
+  }
+  load();
+}
+
+document.getElementById("tx-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const id = document.getElementById("f-id").value;
+  const payload = {
+    date: document.getElementById("f-date").value || todayISO(),
+    description: document.getElementById("f-description").value,
+    type: document.getElementById("f-type").value,
+    amount: Number(document.getElementById("f-amount").value) || 0,
+    category: document.getElementById("f-category").value,
+    account_id: document.getElementById("f-account").value,
+    method: document.getElementById("f-method").value,
+  };
+  if (id) await api(`/api/transactions/${id}`, { method: "PUT", body: payload });
+  else await api("/api/transactions", { method: "POST", body: payload });
+  closeModal("tx-modal");
+  toast(id ? "Transação atualizada" : "Transação criada");
+  load();
+});
+
+document.getElementById("filter-month").addEventListener("input", (e) => {
+  state.month = e.target.value;
+  renderSummary();
+  renderTable();
+});
+document.getElementById("filter-type").addEventListener("change", (e) => {
+  state.type = e.target.value;
+  renderSummary();
+  renderTable();
+});
+
+document.addEventListener("DOMContentLoaded", () => {
+  document.getElementById("filter-month").value = currentMonth();
+  load();
+  loadAI();
+});
+
+// ---- IA: leitura de extrato ----
+let aiItems = [];
+
+async function loadAI() {
+  const [accounts, status] = await Promise.all([api("/api/accounts"), api("/api/ai/status").catch(() => ({ configured: false }))]);
+  const sel = document.getElementById("ai-account");
+  sel.innerHTML = `<option value="">(sem conta)</option>` +
+    accounts.map((a) => `<option value="${a.id}">${escapeHtml(a.name)}</option>`).join("");
+  const st = document.getElementById("ai-status");
+  if (!status.configured) {
+    st.innerHTML = `<span class="tag amber">IA sem chave — defina GEMINI_API_KEY</span>`;
+  } else {
+    st.textContent = `IA pronta (${status.model})`;
+  }
+}
+
+async function aiExtract() {
+  const file = document.getElementById("ai-file").files[0];
+  const box = document.getElementById("ai-result");
+  if (!file) return toast("Escolha um print do extrato", true);
+  const btn = document.getElementById("btn-ai");
+  btn.disabled = true;
+  btn.textContent = "Lendo extrato…";
+  box.innerHTML = `<div class="muted">Processando imagem com a IA…</div>`;
+  const fd = new FormData();
+  fd.append("image", file);
+  try {
+    const res = await fetch("/api/ai/extract-statement", { method: "POST", body: fd });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Erro ao ler extrato");
+    aiItems = data.items || [];
+    renderAI();
+  } catch (err) {
+    box.innerHTML = `<div class="note" style="border-left-color:var(--red);color:var(--red);margin-bottom:0;">✖ ${escapeHtml(err.message)}</div>`;
+    toast(err.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "📷 Ler extrato";
+  }
+}
+
+function renderAI() {
+  const box = document.getElementById("ai-result");
+  if (!aiItems.length) {
+    box.innerHTML = `<div class="note" style="border-left-color:var(--amber);margin-bottom:0;">A IA não encontrou movimentações claras na imagem. Revise o print e tente de novo.</div>`;
+    return;
+  }
+  const rows = aiItems.map((it, idx) => {
+    const t = it.type === "income" ? "Receita" : "Despesa";
+    const sign = it.type === "income" ? "text-green" : "text-red";
+    const m = it.method ? ` · <span class="muted">${escapeHtml(it.method)}</span>` : "";
+    return `<tr>
+      <td style="text-align:center;"><input type="checkbox" class="ai-check" data-idx="${idx}" checked></td>
+      <td>${fmtDate(it.date)}</td>
+      <td>${escapeHtml(it.description)}${m}</td>
+      <td><span class="tag">${escapeHtml(it.category || "outros")}</span></td>
+      <td><span class="tag">${t}</span></td>
+      <td class="num ${sign}"><b>${fmt(it.amount)}</b></td>
+    </tr>`;
+  }).join("");
+  const total = aiItems.reduce((s, it) => s + Number(it.amount), 0);
+  box.innerHTML = `
+    <div class="note" style="border-left-color:var(--sky);color:var(--text);">
+      <b>IA detectou ${aiItems.length} movimentações</b> (total R$ ${total.toFixed(2).replace(".", ",")}).
+      Confira abaixo, desmarque o que não quiser lançar e clique em <b>Lançar selecionadas</b>.
+      A IA é auxiliar: revise valores e categorias antes de confirmar.
+    </div>
+    <table style="margin-bottom:12px;">
+      <thead><tr><th style="width:36px;"></th><th>Data</th><th>Descrição</th><th>Categoria</th><th>Tipo</th><th class="num">Valor</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+      <select id="ai-target-account"></select>
+      <button class="btn" onclick="aiConfirm()">✓ Lançar selecionadas</button>
+      <button class="btn ghost" onclick="aiClear()">Descartar</button>
+      <span class="muted">Lançar em: escolha a conta acima</span>
+    </div>`;
+  const sel = document.getElementById("ai-target-account");
+  api("/api/accounts").then((list) => {
+    sel.innerHTML = `<option value="">(sem conta)</option>` +
+      list.map((a) => `<option value="${a.id}">${escapeHtml(a.name)}</option>`).join("");
+    const current = document.getElementById("ai-account").value;
+    if (current) sel.value = current;
+  });
+}
+
+async function aiConfirm() {
+  const checks = [...document.querySelectorAll(".ai-check")]
+    .filter((c) => c.checked)
+    .map((c) => aiItems[Number(c.dataset.idx)]);
+  if (!checks.length) return toast("Nada selecionado para lançar", true);
+  const accountId = document.getElementById("ai-target-account").value;
+  try {
+    const r = await api("/api/ai/confirm-statement", { method: "POST", body: { items: checks, account_id: accountId } });
+    toast(`${r.created} transação(ões) lançada(s)`);
+    aiItems = [];
+    document.getElementById("ai-result").innerHTML = `<div class="note" style="border-left-color:var(--green);margin-bottom:0;">✔ ${r.created} transação(ões) criadas${accountId ? " na conta selecionada" : " sem conta"}.</div>`;
+    load();
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+function aiClear() {
+  aiItems = [];
+  document.getElementById("ai-result").innerHTML = "";
+  document.getElementById("ai-file").value = "";
+}
+</script>
+{% endblock %}

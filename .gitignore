@@ -1,0 +1,20 @@
+# Ambiente Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Dados locais e backups (ficam só na sua máquina)
+data/
+
+# Chaves e credenciais (NUNCA subir)
+credentials/
+
+# Exportações geradas
+exports/
+
+# Editor / SO
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

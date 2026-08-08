@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Finanças{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+  <script src="{{ url_for('static', filename='chart.umd.min.js') }}"></script>
+</head>
+<body>
+  <nav class="topnav">
+    <a class="brand" href="/">Finanças</a>
+    <a href="/">Dashboard</a>
+    <a href="/contas">Contas</a>
+    <a href="/cartoes">Cartões</a>
+    <a href="/caixinhas">Caixinhas</a>
+    <a href="/investimentos">Investimentos</a>
+    <a href="/contas-a-pagar">Contas a pagar</a>
+    <a href="/transacoes">Transações</a>
+    <a href="/movimentacoes">Movimentações</a>
+    <a href="/dados">Dados</a>
+    <span class="storage-badge" id="storage-badge">…</span>
+  </nav>
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+  <div id="toast" class="toast"></div>
+  <div class="modal-backdrop" id="adjust-modal">
+    <div class="modal">
+      <button class="close" onclick="closeModal('adjust-modal')">&times;</button>
+      <h3>Reajustar</h3>
+      <div id="adjust-entity" class="muted" style="margin-bottom:10px;"></div>
+      <label>Campo</label>
+      <select id="adjust-field"></select>
+      <label>Novo valor</label>
+      <input id="adjust-value" type="number" step="0.00000001">
+      <label>Motivo (opcional)</label>
+      <input id="adjust-note" placeholder="ex.: câmbio, dividendo, correção">
+      <div class="form-actions">
+        <button type="button" class="btn ghost" onclick="closeModal('adjust-modal')">Cancelar</button>
+        <button type="button" class="btn" onclick="saveAdjust()">Salvar reajuste</button>
+      </div>
+    </div>
+  </div>
+  <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: financas
+    runtime: python
+    plan: free
+    region: saopaulo
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn main:app --bind 0.0.0.0:$PORT --timeout 120
+    healthCheckPath: /api/meta
+    envVars:
+      - key: FIREBASE_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false

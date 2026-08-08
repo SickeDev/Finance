@@ -1,0 +1,201 @@
+{% extends "base.html" %}
+{% block title %}Financiamentos · Finanças{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>🏍️ Financiamentos e parcelas</h1>
+  <button class="btn" onclick="openModal('fin-modal')">+ Novo financiamento</button>
+</div>
+<div class="grid cols-4" id="fin-summary" style="margin-bottom:16px;"></div>
+<div class="card">
+  <table>
+    <thead><tr><th>Nome</th><th>Cat.</th><th class="num">Parcela</th><th>Progresso</th><th class="num">Restante</th><th>Status</th><th></th></tr></thead>
+    <tbody id="fin-body"></tbody>
+  </table>
+</div>
+
+<div class="modal-backdrop" id="fin-modal">
+  <div class="modal">
+    <button class="close" onclick="closeModal('fin-modal')">&times;</button>
+    <h3 id="fin-modal-title">Novo financiamento</h3>
+    <form id="fin-form">
+      <input type="hidden" id="f-id">
+      <label>Nome</label>
+      <input id="f-name" required placeholder="Fan 160, Casa, Carro…">
+      <label>Categoria</label>
+      <select id="f-category"></select>
+      <div class="form-grid">
+        <div>
+          <label>Valor total (R$)</label>
+          <input id="f-total" type="number" step="0.01" value="0">
+        </div>
+        <div>
+          <label>Valor da parcela (R$)</label>
+          <input id="f-monthly" type="number" step="0.01" value="0">
+        </div>
+      </div>
+      <div class="form-grid">
+        <div>
+          <label>Total de parcelas</label>
+          <input id="f-total_inst" type="number" min="1" value="1">
+        </div>
+        <div>
+          <label>Parcelas pagas</label>
+          <input id="f-paid" type="number" min="0" value="0">
+        </div>
+      </div>
+      <div class="form-grid">
+        <div>
+          <label>Vencimento (dia)</label>
+          <input id="f-due_day" type="number" min="1" max="31" value="10">
+        </div>
+        <div>
+          <label>Início</label>
+          <input id="f-start_date" type="date">
+        </div>
+      </div>
+      <div class="form-actions">
+        <button type="button" class="btn ghost" onclick="closeModal('fin-modal')">Cancelar</button>
+        <button type="submit" class="btn">Salvar</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function load() {
+  const [fins, accounts, payments, meta] = await Promise.all([
+    api("/api/financings"), api("/api/accounts"), api("/api/payments"), api("/api/meta"),
+  ]);
+  const catSelect = document.getElementById("f-category");
+  catSelect.innerHTML = meta.categories.map((c) => `<option>${c}</option>`).join("");
+  const paidThisMonth = (id) => (payments || []).some(
+    (p) => p.kind === "financing" && p.ref_id === id && (p.date || "").slice(0, 7) === currentMonth()
+  );
+
+  const totalRemaining = fins.reduce((s, f) => s + remaining(f), 0);
+  const totalMonthly = fins.reduce((s, f) => s + Number(f.monthly_value || 0), 0);
+  const totalPaid = fins.reduce((s, f) => s + Number(f.paid || 0), 0);
+
+  document.getElementById("fin-summary").innerHTML = `
+    <div class="card kpi"><div class="label">Contratos</div><div class="value text-accent">${fins.length}</div></div>
+    <div class="card kpi"><div class="label">Restante</div><div class="value text-red">${fmt(totalRemaining)}</div></div>
+    <div class="card kpi"><div class="label">Parcelas por mês</div><div class="value text-amber">${fmt(totalMonthly)}</div></div>
+    <div class="card kpi"><div class="label">Parcelas pagas</div><div class="value text-green">${totalPaid}</div></div>`;
+
+  const body = document.getElementById("fin-body");
+  if (!fins.length) {
+    body.innerHTML = `<tr><td colspan="7" class="empty">Nenhum financiamento ainda.</td></tr>`;
+    return;
+  }
+  body.innerHTML = fins.map((f) => {
+    const paid = Number(f.paid || 0);
+    const total = Number(f.installments_total || 1);
+    const pct = Math.min(100, Math.round((paid / total) * 100));
+    const finished = remaining(f) <= 0;
+    const paidNow = paidThisMonth(f.id);
+    const monthOpts = accounts.length
+      ? `<select id="payacc-${f.id}">${accounts.map((a) => `<option value="${a.id}">${escapeHtml(a.name)}</option>`).join("")}</select>`
+      : `<span class="muted">(sem conta)</span>`;
+    return `<tr>
+      <td><b>${escapeHtml(f.name)}</b><div class="muted">Vence dia ${f.due_day || "—"} · desde ${fmtDate(f.start_date)}</div></td>
+      <td><span class="tag">${escapeHtml(f.category || "Outros")}</span></td>
+      <td class="num"><b>${fmt(f.monthly_value)}</b></td>
+      <td style="min-width:160px;">
+        <div class="muted" style="display:flex;justify-content:space-between;"><span>${paid}/${total}</span><span>${pct}%</span></div>
+        <div class="progress" style="margin-top:5px;"><div style="width:${pct}%;${pct >= 100 ? "background:var(--green);" : ""}"></div></div>
+      </td>
+      <td class="num text-red"><b>${fmt(remaining(f))}</b></td>
+      <td>${paidNow ? `<span class="tag green">Pago este mês</span>` : (finished ? `<span class="muted">Quitado</span>` : `<span class="muted">Pendente</span>`)}</td>
+      <td>
+        <div style="display:flex;gap:6px;justify-content:flex-end;align-items:center;flex-wrap:wrap;">
+          ${monthOpts}
+          <button class="btn small" onclick="payFin('${f.id}')" ${paidNow || finished || !accounts.length ? "disabled" : ""}>Pagar parcela</button>
+          ${paidNow ? `<button class="btn ghost small" onclick="unpayFin('${f.id}')">Estornar</button>` : ""}
+          <button class="btn ghost small" onclick="editFin('${f.id}')">Editar</button>
+          <button class="btn ghost small" onclick="openAdjust('financings','${f.id}','${escapeHtml(f.name)}',[{field:'monthly_value',label:'Valor da parcela',value:Number(f.monthly_value||0)},{field:'paid',label:'Parcelas pagas',value:Number(f.paid||0)}])">Reajustar</button>
+          <button class="btn danger small" onclick="delFin('${f.id}')">Excluir</button>
+        </div>
+      </td>
+    </tr>`;
+  }).join("");
+}
+
+function remaining(f) {
+  return (Number(f.monthly_value || 0) * (Number(f.installments_total || 0) - Number(f.paid || 0)));
+}
+
+async function payFin(id) {
+  const sel = document.getElementById("payacc-" + id);
+  try {
+    await api(`/api/financings/${id}/pay`, { method: "POST", body: { account_id: sel ? sel.value : "" } });
+    toast("Parcela paga");
+  } catch (err) {
+    toast(err.message, true);
+  }
+  load();
+}
+
+async function unpayFin(id) {
+  if (!confirm("Estornar a última parcela paga deste financiamento?")) return;
+  try {
+    await api(`/api/financings/${id}/unpay`, { method: "POST" });
+    toast("Parcela estornada");
+  } catch (err) {
+    toast(err.message, true);
+  }
+  load();
+}
+
+function editFin(id) {
+  api("/api/financings").then((list) => {
+    const f = list.find((x) => x.id === id);
+    document.getElementById("fin-modal-title").textContent = "Editar financiamento";
+    document.getElementById("f-id").value = f.id;
+    document.getElementById("f-name").value = f.name || "";
+    document.getElementById("f-category").value = f.category || "Outros";
+    document.getElementById("f-total").value = f.total ?? 0;
+    document.getElementById("f-monthly").value = f.monthly_value ?? 0;
+    document.getElementById("f-total_inst").value = f.installments_total ?? 1;
+    document.getElementById("f-paid").value = f.paid ?? 0;
+    document.getElementById("f-due_day").value = f.due_day ?? 10;
+    document.getElementById("f-start_date").value = f.start_date || "";
+    openModal("fin-modal");
+  });
+}
+
+async function delFin(id) {
+  if (!confirmDelete()) return;
+  try {
+    await delWithForce(`/api/financings/${id}`, "O financiamento tem parcelas pagas vinculadas.");
+    toast("Financiamento excluído");
+  } catch (err) {
+    toast(err.message, true);
+  }
+  load();
+}
+
+document.getElementById("fin-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const id = document.getElementById("f-id").value;
+  const payload = {
+    name: document.getElementById("f-name").value,
+    category: document.getElementById("f-category").value,
+    total: Number(document.getElementById("f-total").value) || 0,
+    monthly_value: Number(document.getElementById("f-monthly").value) || 0,
+    installments_total: Number(document.getElementById("f-total_inst").value) || 1,
+    paid: Number(document.getElementById("f-paid").value) || 0,
+    due_day: Number(document.getElementById("f-due_day").value) || 10,
+    start_date: document.getElementById("f-start_date").value,
+  };
+  if (id) await api(`/api/financings/${id}`, { method: "PUT", body: payload });
+  else await api("/api/financings", { method: "POST", body: payload });
+  closeModal("fin-modal");
+  toast(id ? "Financiamento atualizado" : "Financiamento criado");
+  load();
+});
+
+document.addEventListener("DOMContentLoaded", load);
+</script>
+{% endblock %}

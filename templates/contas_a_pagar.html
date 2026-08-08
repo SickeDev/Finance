@@ -1,0 +1,345 @@
+{% extends "base.html" %}
+{% block title %}Contas a pagar · Finanças{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>💸 Contas a pagar</h1>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;">
+    <button class="btn ghost" onclick="openModal('fin-modal'); finModalTitle('Nova parcela/financiamento')">+ Parcela/Financiamento</button>
+    <button class="btn" onclick="openRec()">+ Conta recorrente</button>
+  </div>
+</div>
+<div class="note">
+  Aqui ficam todas as contas fixas juntas: <b>recorrentes</b> (aluguel, comida…) e
+  <b>financiamentos/parcelas</b> (moto, notebook…). Use <b>Pagar</b> para lançar o gasto do mês
+  (uma vez por mês) ou <b>Estornar</b> se pagou por engano. O que já foi pago no mês aparece marcado.
+</div>
+<div class="grid cols-4" id="cap-summary" style="margin-bottom:16px;"></div>
+<div class="card">
+  <table>
+    <thead><tr><th>Tipo</th><th>Nome</th><th>Cat.</th><th>Vencimento</th><th class="num">Valor</th><th>Progresso</th><th>Conta p/ pagar</th><th></th></tr></thead>
+    <tbody id="cap-body"></tbody>
+  </table>
+</div>
+
+<div class="modal-backdrop" id="fin-modal">
+  <div class="modal">
+    <button class="close" onclick="closeModal('fin-modal')">&times;</button>
+    <h3 id="fin-modal-title">Nova parcela/financiamento</h3>
+    <form id="fin-form">
+      <input type="hidden" id="f-id">
+      <label>Nome</label>
+      <input id="f-name" required placeholder="Fan 160, Casa, Carro…">
+      <label>Categoria</label>
+      <select id="f-category"></select>
+      <div class="form-grid">
+        <div>
+          <label>Valor total (R$)</label>
+          <input id="f-total" type="number" step="0.01" value="0">
+        </div>
+        <div>
+          <label>Valor da parcela (R$)</label>
+          <input id="f-monthly" type="number" step="0.01" value="0">
+        </div>
+      </div>
+      <div class="form-grid">
+        <div>
+          <label>Total de parcelas</label>
+          <input id="f-total_inst" type="number" min="1" value="1">
+        </div>
+        <div>
+          <label>Parcelas pagas</label>
+          <input id="f-paid" type="number" min="0" value="0">
+        </div>
+      </div>
+      <div class="form-grid">
+        <div>
+          <label>Vencimento (dia)</label>
+          <input id="f-due_day" type="number" min="1" max="31" value="10">
+        </div>
+        <div>
+          <label>Início (vazio = já começou)</label>
+          <input id="f-start_date" type="date">
+        </div>
+      </div>
+      <div class="form-actions">
+        <button type="button" class="btn ghost" onclick="closeModal('fin-modal')">Cancelar</button>
+        <button type="submit" class="btn">Salvar</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="rec-modal">
+  <div class="modal">
+    <button class="close" onclick="closeModal('rec-modal')">&times;</button>
+    <h3 id="rec-modal-title">Nova conta recorrente</h3>
+    <form id="rec-form">
+      <input type="hidden" id="r-id">
+      <label>Nome</label>
+      <input id="r-name" required placeholder="Internet, Aluguel, Netflix…">
+      <label>Categoria</label>
+      <select id="r-category"></select>
+      <div class="form-grid">
+        <div>
+          <label>Valor (R$)</label>
+          <input id="r-amount" type="number" step="0.01" value="0">
+        </div>
+        <div>
+          <label>Vencimento (dia)</label>
+          <input id="r-due_day" type="number" min="1" max="31" value="10">
+        </div>
+      </div>
+      <label style="margin-top:12px;"><input type="checkbox" id="r-active" style="width:auto;margin-right:6px;" checked>Ativa</label>
+      <div class="form-actions">
+        <button type="button" class="btn ghost" onclick="closeModal('rec-modal')">Cancelar</button>
+        <button type="submit" class="btn">Salvar</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let state = { fins: [], recs: [], payments: [], accounts: [], categories: [] };
+
+function finRemaining(f) {
+  return Number(f.monthly_value || 0) * (Number(f.installments_total || 0) - Number(f.paid || 0));
+}
+
+function finActiveNow(f) {
+  if (Number(f.installments_total || 0) - Number(f.paid || 0) <= 0) return false;
+  if (f.start_date) return (f.start_date.slice(0, 7) <= currentMonth());
+  return true;
+}
+
+function paidThisMonth(kind, refId) {
+  return (state.payments || []).some(
+    (p) => p.kind === kind && p.ref_id === refId && (p.date || "").slice(0, 7) === currentMonth()
+  );
+}
+
+async function load() {
+  const [fins, recs, payments, accounts, meta] = await Promise.all([
+    api("/api/financings"), api("/api/recurring"), api("/api/payments"), api("/api/accounts"), api("/api/meta"),
+  ]);
+  state = { fins, recs, payments, accounts, categories: meta.categories };
+
+  document.getElementById("f-category").innerHTML = meta.categories.map((c) => `<option>${c}</option>`).join("");
+  document.getElementById("r-category").innerHTML = meta.categories.map((c) => `<option>${c}</option>`).join("");
+
+  renderSummary();
+  renderTable();
+}
+
+function renderSummary() {
+  const monthCost = state.recs.filter((r) => r.active !== false)
+    .reduce((s, r) => s + Number(r.amount || 0), 0)
+    + state.fins.filter(finActiveNow).reduce((s, f) => s + Number(f.monthly_value || 0), 0);
+  const remaining = state.fins.reduce((s, f) => s + finRemaining(f), 0);
+  const paid = state.fins.reduce((s, f) => s + Number(f.paid || 0), 0);
+  document.getElementById("cap-summary").innerHTML = `
+    <div class="card kpi"><div class="label">Contas ativas</div><div class="value text-accent">${state.recs.filter((r) => r.active !== false).length + state.fins.filter((f) => finRemaining(f) > 0).length}</div></div>
+    <div class="card kpi"><div class="label">Por mês (atual)</div><div class="value text-amber">${fmt(monthCost)}</div><div class="sub">contas + parcelas vigentes</div></div>
+    <div class="card kpi"><div class="label">Restante parcelas</div><div class="value text-red">${fmt(remaining)}</div></div>
+    <div class="card kpi"><div class="label">Parcelas pagas</div><div class="value text-green">${paid}</div></div>`;
+}
+
+function accSelectHtml(value, key) {
+  if (!state.accounts.length) return `<span class="muted">(sem conta)</span>`;
+  return `<select id="${key}" style="width:auto;max-width:170px;">${state.accounts.map((a) => `<option value="${a.id}" ${String(a.id) === String(value || "") ? "selected" : ""}>${escapeHtml(a.name)}</option>`).join("")}</select>`;
+}
+
+function renderTable() {
+  const body = document.getElementById("cap-body");
+  const rows = [];
+
+  state.recs.forEach((r) => {
+    const paidRec = paidThisMonth("recurring", r.id);
+    rows.push({
+      tipo: `<span class="tag">Recorrente</span>`,
+      nome: `<b>${escapeHtml(r.name)}</b>${r.active === false ? ` <span class="tag amber">Inativa</span>` : ""}`,
+      cat: `<span class="tag">${escapeHtml(r.category || "Outros")}</span>`,
+      venc: `<span class="muted">Dia ${r.due_day || "—"}</span>`,
+      valor: `<b>${fmt(r.amount)}</b>`,
+      progresso: paidRec ? `<span class="tag green">Pago este mês</span>` : `<span class="muted">Todo mês</span>`,
+      conta: accSelectHtml(r.account_id, "payacc-r-" + r.id),
+      acoes: `
+        ${state.accounts.length && !paidRec ? `<button class="btn small" onclick="payRec('${r.id}')">Pagar</button>` : ""}
+        ${paidRec ? `<button class="btn ghost small" onclick="unpayRec('${r.id}')">Estornar</button>` : ""}
+        <button class="btn ghost small" onclick="editRec('${r.id}')">Editar</button>
+        <button class="btn ghost small" onclick="openAdjust('recurring','${r.id}','${escapeHtml(r.name)}',[{field:'amount',label:'Valor',value:Number(r.amount||0)}])">Reajustar</button>
+        <button class="btn danger small" onclick="delRec('${r.id}')">Excluir</button>`,
+    });
+  });
+
+  state.fins.forEach((f) => {
+    const paid = Number(f.paid || 0);
+    const total = Number(f.installments_total || 1);
+    const pct = Math.min(100, Math.round((paid / total) * 100));
+    const finished = finRemaining(f) <= 0;
+    const paidFin = paidThisMonth("financing", f.id);
+    rows.push({
+      tipo: `<span class="tag amber">Parcela</span>`,
+      nome: `<b>${escapeHtml(f.name)}</b>${paidFin ? ` <span class="tag green">Pago</span>` : ""}${f.start_date ? `<div class="muted">Começa ${fmtDate(f.start_date)}</div>` : ""}`,
+      cat: `<span class="tag">${escapeHtml(f.category || "Outros")}</span>`,
+      venc: `<span class="muted">Dia ${f.due_day || "—"}</span>`,
+      valor: `<b>${fmt(f.monthly_value)}</b>`,
+      progresso: `<div class="muted" style="display:flex;justify-content:space-between;"><span>${paid}/${total}</span><span>${pct}%</span></div>
+        <div class="progress" style="margin-top:5px;"><div style="width:${pct}%;${pct >= 100 ? "background:var(--green);" : ""}"></div></div>`,
+      conta: accSelectHtml("", "payacc-f-" + f.id),
+      acoes: `
+        <button class="btn small" onclick="payFin('${f.id}')" ${finished || paidFin ? "disabled" : ""}>Pagar</button>
+        ${paid > 0 ? `<button class="btn ghost small" onclick="unpayFin('${f.id}')">Estornar</button>` : ""}
+        <button class="btn ghost small" onclick="editFin('${f.id}')">Editar</button>
+        <button class="btn ghost small" onclick="openAdjust('financings','${f.id}','${escapeHtml(f.name)}',[{field:'monthly_value',label:'Valor da parcela',value:Number(f.monthly_value||0)},{field:'paid',label:'Parcelas pagas',value:Number(f.paid||0)}])">Reajustar</button>
+        <button class="btn danger small" onclick="delFin('${f.id}')">Excluir</button>`,
+    });
+  });
+
+  if (!rows.length) {
+    body.innerHTML = `<tr><td colspan="8" class="empty">Nenhuma conta a pagar. Cadastre a primeira.</td></tr>`;
+    return;
+  }
+  body.innerHTML = rows.map((r) => `<tr><td>${r.tipo}</td><td>${r.nome}</td><td>${r.cat}</td><td>${r.venc}</td><td class="num">${r.valor}</td><td style="min-width:140px;">${r.progresso}</td><td>${r.conta}</td><td class="row-actions">${r.acoes}</td></tr>`).join("");
+}
+
+// ---- financiamentos/parcelas ----
+function finModalTitle(t) { document.getElementById("fin-modal-title").textContent = t; }
+
+function editFin(id) {
+  const f = state.fins.find((x) => x.id === id);
+  finModalTitle("Editar parcela/financiamento");
+  document.getElementById("f-id").value = f.id;
+  document.getElementById("f-name").value = f.name || "";
+  document.getElementById("f-category").value = f.category || "Outros";
+  document.getElementById("f-total").value = f.total ?? 0;
+  document.getElementById("f-monthly").value = f.monthly_value ?? 0;
+  document.getElementById("f-total_inst").value = f.installments_total ?? 1;
+  document.getElementById("f-paid").value = f.paid ?? 0;
+  document.getElementById("f-due_day").value = f.due_day ?? 10;
+  document.getElementById("f-start_date").value = f.start_date || "";
+  openModal("fin-modal");
+}
+
+async function payFin(id) {
+  const sel = document.getElementById("payacc-f-" + id);
+  try {
+    await api(`/api/financings/${id}/pay`, { method: "POST", body: { account_id: sel ? sel.value : "" } });
+    toast("Parcela paga");
+  } catch (err) { toast(err.message, true); }
+  load();
+}
+
+async function unpayFin(id) {
+  if (!confirm("Estornar a última parcela paga deste financiamento?")) return;
+  try {
+    await api(`/api/financings/${id}/unpay`, { method: "POST" });
+    toast("Parcela estornada");
+  } catch (err) { toast(err.message, true); }
+  load();
+}
+
+async function delFin(id) {
+  if (!confirmDelete()) return;
+  try {
+    await delWithForce(`/api/financings/${id}`, "O financiamento tem parcelas pagas vinculadas.");
+    toast("Parcela excluída");
+  } catch (err) {
+    toast(err.message, true);
+  }
+  load();
+}
+
+document.getElementById("fin-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const id = document.getElementById("f-id").value;
+  const payload = {
+    name: document.getElementById("f-name").value,
+    category: document.getElementById("f-category").value,
+    total: Number(document.getElementById("f-total").value) || 0,
+    monthly_value: Number(document.getElementById("f-monthly").value) || 0,
+    installments_total: Number(document.getElementById("f-total_inst").value) || 1,
+    paid: Number(document.getElementById("f-paid").value) || 0,
+    due_day: Number(document.getElementById("f-due_day").value) || 10,
+    start_date: document.getElementById("f-start_date").value,
+  };
+  if (id) await api(`/api/financings/${id}`, { method: "PUT", body: payload });
+  else await api("/api/financings", { method: "POST", body: payload });
+  closeModal("fin-modal");
+  toast(id ? "Atualizado" : "Criado");
+  load();
+});
+
+// ---- recorrentes ----
+function openRec() {
+  document.getElementById("rec-modal-title").textContent = "Nova conta recorrente";
+  document.getElementById("r-id").value = "";
+  document.getElementById("r-name").value = "";
+  document.getElementById("r-amount").value = "";
+  document.getElementById("r-due_day").value = 10;
+  document.getElementById("r-active").checked = true;
+  openModal("rec-modal");
+}
+
+function editRec(id) {
+  const r = state.recs.find((x) => x.id === id);
+  document.getElementById("rec-modal-title").textContent = "Editar conta recorrente";
+  document.getElementById("r-id").value = r.id;
+  document.getElementById("r-name").value = r.name || "";
+  document.getElementById("r-category").value = r.category || "Outros";
+  document.getElementById("r-amount").value = r.amount ?? 0;
+  document.getElementById("r-due_day").value = r.due_day || 10;
+  document.getElementById("r-active").checked = r.active !== false;
+  openModal("rec-modal");
+}
+
+async function payRec(id) {
+  const sel = document.getElementById("payacc-r-" + id);
+  try {
+    await api(`/api/recurring/${id}/pay`, { method: "POST", body: { account_id: sel ? sel.value : "" } });
+    toast("Despesa lançada em Transações");
+  } catch (err) { toast(err.message, true); }
+  load();
+}
+
+async function unpayRec(id) {
+  if (!confirm("Estornar o pagamento desta conta no mês atual?")) return;
+  try {
+    await api(`/api/recurring/${id}/unpay`, { method: "POST" });
+    toast("Pagamento estornado");
+  } catch (err) { toast(err.message, true); }
+  load();
+}
+
+async function delRec(id) {
+  if (!confirmDelete()) return;
+  try {
+    await delWithForce(`/api/recurring/${id}`, "A recorrente tem pagamentos vinculados.");
+    toast("Recorrente excluída");
+  } catch (err) {
+    toast(err.message, true);
+  }
+  load();
+}
+
+document.getElementById("rec-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const id = document.getElementById("r-id").value;
+  const payload = {
+    name: document.getElementById("r-name").value,
+    category: document.getElementById("r-category").value,
+    amount: Number(document.getElementById("r-amount").value) || 0,
+    due_day: Number(document.getElementById("r-due_day").value) || 10,
+    active: document.getElementById("r-active").checked,
+  };
+  if (id) await api(`/api/recurring/${id}`, { method: "PUT", body: payload });
+  else await api("/api/recurring", { method: "POST", body: payload });
+  closeModal("rec-modal");
+  toast(id ? "Atualizado" : "Criado");
+  load();
+});
+
+document.addEventListener("DOMContentLoaded", load);
+</script>
+{% endblock %}

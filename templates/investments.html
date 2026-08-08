@@ -1,0 +1,198 @@
+{% extends "base.html" %}
+{% block title %}Investimentos · Finanças{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>📈 Investimentos</h1>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;">
+    <button class="btn ghost" onclick="refreshPrices()" id="btn-refresh">↻ Atualizar cotações</button>
+    <button class="btn" onclick="openModal('inv-modal')">+ Novo ativo</button>
+  </div>
+</div>
+<div class="grid cols-4" id="inv-summary" style="margin-bottom:16px;"></div>
+<div class="note" id="quote-note" style="display:none;"></div>
+<div class="card">
+  <table>
+    <thead><tr><th>Ativo</th><th>Tipo</th><th class="num">Qtde</th><th class="num">Preço médio</th><th class="num">Preço atual</th><th class="num">Total</th><th class="num">Lucro/Perda</th><th class="num">Divid. estim./mês</th><th></th></tr></thead>
+    <tbody id="inv-body"></tbody>
+  </table>
+</div>
+
+<div class="modal-backdrop" id="inv-modal">
+  <div class="modal">
+    <button class="close" onclick="closeModal('inv-modal')">&times;</button>
+    <h3 id="inv-modal-title">Novo ativo</h3>
+    <form id="inv-form">
+      <input type="hidden" id="f-id">
+      <label>Nome</label>
+      <input id="f-name" required>
+      <label>Ticker</label>
+      <input id="f-ticker" placeholder="PETR4, MXRF11, BTC…">
+      <label>Banco (conta onde está)</label>
+      <select id="f-account"><option value="">(nenhum)</option></select>
+      <div class="form-grid">
+        <div>
+          <label>Tipo</label>
+          <select id="f-type"><option>Ação</option><option>FII</option><option>Cripto</option><option>Renda fixa</option><option>ETF</option></select>
+        </div>
+        <div>
+          <label>Quantidade</label>
+          <input id="f-quantity" type="number" step="0.00000001" value="0">
+        </div>
+      </div>
+      <div class="form-grid">
+        <div>
+          <label>Preço médio (R$)</label>
+          <input id="f-avg_price" type="number" step="0.00000001" value="0">
+        </div>
+        <div>
+          <label>Preço atual (R$)</label>
+          <input id="f-current_price" type="number" step="0.00000001" value="0">
+        </div>
+      </div>
+      <div class="form-actions">
+        <button type="button" class="btn ghost" onclick="closeModal('inv-modal')">Cancelar</button>
+        <button type="submit" class="btn">Salvar</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function load() {
+  const [invs, accounts, divs] = await Promise.all([
+    api("/api/investments"),
+    api("/api/accounts"),
+    api("/api/market/dividends"),
+  ]);
+  const accSelect = document.getElementById("f-account");
+  accSelect.innerHTML = `<option value="">(nenhum)</option>` +
+    accounts.map((a) => `<option value="${a.id}">${escapeHtml(a.name)}</option>`).join("");
+  const accName = (id) => {
+    const a = accounts.find((x) => x.id === id);
+    return a ? a.name : null;
+  };
+  const total = invs.reduce((s, i) => s + Number(i.quantity) * Number(i.current_price), 0);
+  const invested = invs.reduce((s, i) => s + Number(i.quantity) * Number(i.avg_price), 0);
+  const profit = total - invested;
+  const pct = invested > 0 ? (profit / invested) * 100 : 0;
+  const monthly = divs && divs.monthly ? Number(divs.monthly) : 0;
+
+  document.getElementById("inv-summary").innerHTML = `
+    <div class="card kpi"><div class="label">Ativos</div><div class="value text-accent">${invs.length}</div></div>
+    <div class="card kpi"><div class="label">Total aplicado</div><div class="value">${fmt(total)}</div></div>
+    <div class="card kpi"><div class="label">Investido</div><div class="value">${fmt(invested)}</div></div>
+    <div class="card kpi"><div class="label">Dividendos/mês</div><div class="value text-green">${fmt(monthly)}</div><div class="sub">${fmt(monthly * 12)} / ano (estimativa)</div></div>`;
+
+  const body = document.getElementById("inv-body");
+  if (!invs.length) {
+    body.innerHTML = `<tr><td colspan="9" class="empty">Nenhum ativo ainda.</td></tr>`;
+    return;
+  }
+  body.innerHTML = invs.map((i) => {
+    const qty = Number(i.quantity || 0);
+    const avg = Number(i.avg_price || 0);
+    const cur = Number(i.current_price || 0);
+    const totalVal = qty * cur;
+    const profit = totalVal - qty * avg;
+    const div = Number(i.dividend_monthly || 0) * qty;
+    const quoteInfo = i.quote_date ? ` <span class="muted">· ${fmtDate(i.quote_date)}</span>` : "";
+    return `<tr>
+      <td><b>${escapeHtml(i.name)}</b><div class="muted">${escapeHtml(i.ticker || "—")}${accName(i.account_id) ? ` · 🏦 ${escapeHtml(accName(i.account_id))}` : ""}</div></td>
+      <td><span class="tag">${escapeHtml(i.type || "Ação")}</span></td>
+      <td class="num">${qty}</td>
+      <td class="num">${fmt(avg)}</td>
+      <td class="num">${fmt(cur)}<span class="muted">${quoteInfo}</span></td>
+      <td class="num"><b>${fmt(totalVal)}</b></td>
+      <td class="num ${profit >= 0 ? "text-green" : "text-red"}">${profit >= 0 ? "+" : ""}${fmt(profit)}</td>
+      <td class="num text-green"><b>${fmt(div)}</b></td>
+      <td class="row-actions">
+        <button class="btn ghost small" onclick="editInv('${i.id}')">Editar</button>
+        <button class="btn ghost small" onclick="openAdjust('investments','${i.id}','${escapeHtml(i.name)}',[{field:'current_price',label:'Preço atual',value:Number(i.current_price||0)},{field:'quantity',label:'Quantidade',value:Number(i.quantity||0)},{field:'avg_price',label:'Preço médio',value:Number(i.avg_price||0)}])">Reajustar</button>
+        <button class="btn danger small" onclick="delInv('${i.id}')">Excluir</button>
+      </td>
+    </tr>`;
+  }).join("");
+}
+
+async function refreshPrices() {
+  const btn = document.getElementById("btn-refresh");
+  const note = document.getElementById("quote-note");
+  btn.disabled = true;
+  btn.textContent = "Consultando…";
+  note.style.display = "none";
+  try {
+    const r = await api("/api/investments/refresh-prices", { method: "POST" });
+    const fails = (r.results || []).filter((x) => !x.ok);
+    if (r.updated > 0 || r.failed > 0) {
+      let msg = `↻ ${r.updated} cotação(ões) atualizada(s)${r.failed ? ` · ${r.failed} falha(s)` : ""}.`;
+      if (fails.length) {
+        msg += `<br><span class="muted">${fails.map((f) => `${escapeHtml(f.name || f.ticker)}: ${escapeHtml(f.error || "erro")}`).join(" · ")}</span>`;
+      }
+      note.innerHTML = msg;
+      note.style.display = "block";
+      note.style.borderLeftColor = fails.length ? "var(--amber)" : "var(--green)";
+    }
+    toast("Cotações atualizadas");
+  } catch (err) {
+    note.innerHTML = `✖ ${escapeHtml(err.message)}`;
+    note.style.display = "block";
+    note.style.borderLeftColor = "var(--red)";
+    toast(err.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "↻ Atualizar cotações";
+  }
+  load();
+}
+
+function editInv(id) {
+  api("/api/investments").then((list) => {
+    const i = list.find((x) => x.id === id);
+    document.getElementById("inv-modal-title").textContent = "Editar ativo";
+    document.getElementById("f-id").value = i.id;
+    document.getElementById("f-name").value = i.name || "";
+    document.getElementById("f-ticker").value = i.ticker || "";
+    document.getElementById("f-account").value = i.account_id || "";
+    document.getElementById("f-type").value = i.type || "Ação";
+    document.getElementById("f-quantity").value = i.quantity ?? 0;
+    document.getElementById("f-avg_price").value = i.avg_price ?? 0;
+    document.getElementById("f-current_price").value = i.current_price ?? 0;
+    openModal("inv-modal");
+  });
+}
+
+async function delInv(id) {
+  if (!confirmDelete()) return;
+  try {
+    await delWithForce(`/api/investments/${id}`);
+    toast("Ativo excluído");
+  } catch (err) {
+    toast(err.message, true);
+  }
+  load();
+}
+
+document.getElementById("inv-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const id = document.getElementById("f-id").value;
+  const payload = {
+    name: document.getElementById("f-name").value,
+    ticker: document.getElementById("f-ticker").value,
+    account_id: document.getElementById("f-account").value,
+    type: document.getElementById("f-type").value,
+    quantity: Number(document.getElementById("f-quantity").value) || 0,
+    avg_price: Number(document.getElementById("f-avg_price").value) || 0,
+    current_price: Number(document.getElementById("f-current_price").value) || 0,
+  };
+  if (id) await api(`/api/investments/${id}`, { method: "PUT", body: payload });
+  else await api("/api/investments", { method: "POST", body: payload });
+  closeModal("inv-modal");
+  toast(id ? "Ativo atualizado" : "Ativo criado");
+  load();
+});
+
+document.addEventListener("DOMContentLoaded", load);
+</script>
+{% endblock %}

@@ -1,0 +1,187 @@
+{% extends "base.html" %}
+{% block title %}Dados · Finanças{% endblock %}
+{% block content %}
+<h1>📄 Importação e exportação</h1>
+
+<div class="grid cols-2">
+  <div class="card">
+    <h2>📤 Exportar (XML)</h2>
+    <p class="muted" style="margin-bottom:14px;">Baixa todo o histórico em um arquivo XML. Use para backup ou para transferir entre armazenamentos.</p>
+    <a class="btn" href="/api/export">Baixar XML</a>
+  </div>
+
+  <div class="card">
+    <h2>📥 Importar (XML ou Excel)</h2>
+    <p class="muted" style="margin-bottom:14px;">Carrega um arquivo <b>XML</b> exportado por este sistema ou uma planilha <b>Excel (.xlsx)</b> com uma aba por coleção. Escolha se quer <b>acrescentar</b> ou <b>substituir</b> os dados.</p>
+    <form id="import-form">
+      <label>Arquivo XML ou Excel (.xlsx)</label>
+      <input type="file" id="import-file" accept=".xml,.xlsx,.xlsm" required>
+      <label>Modo</label>
+      <select id="import-mode">
+        <option value="append">Acrescentar aos dados atuais</option>
+        <option value="replace">Substituir todos os dados (perigo: apaga o atual)</option>
+      </select>
+      <div class="form-actions">
+        <button type="submit" class="btn">Importar</button>
+      </div>
+    </form>
+    <div id="import-result"></div>
+    <div class="note" style="margin-top:12px;margin-bottom:0;">
+      <b>Excel (.xlsx):</b> crie uma aba por coleção: <code>Contas</code>,
+      <code>Cartões</code>, <code>Compras</code>, <code>Caixinhas</code>,
+      <code>Investimentos</code>, <code>Financiamentos</code>,
+      <code>Recorrentes</code>, <code>Transações</code>, <code>Transferências</code>,
+      <code>Pagamentos</code>, <code>Patrimônio</code>, <code>Configurações</code>.
+      Primeira linha = cabeçalho (ex.: Nome, Saldo, Valor,
+      Data). A referência <code>Conta</code>/<code>Cartão</code> aceita o nome.
+    </div>
+  </div>
+</div>
+
+<div class="card" style="margin-top:16px;">
+  <h2>🤖 IA de leitura de extrato (Google Gemini)</h2>
+  <p class="muted" style="margin-bottom:12px;">
+    Usada na página <b>Transações</b> para ler prints de extrato bancário. Você
+    precisa de uma chave gratuita do Google AI Studio
+    (<code>https://aistudio.google.com</code>). Coloque a chave abaixo e clique
+    em <b>Salvar chave</b>.
+  </p>
+  <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+    <input type="password" id="gemini-key" placeholder="Cole sua chave da API do Gemini" style="max-width:420px;">
+    <button class="btn" onclick="saveGeminiKey()">Salvar chave</button>
+    <span class="muted" id="gemini-status"></span>
+  </div>
+  <div class="note" style="margin-top:12px;margin-bottom:0;">
+    <b>Alternativa:</b> defina a variável de ambiente <code>GEMINI_API_KEY</code>
+    antes de iniciar o servidor, ou crie o arquivo
+    <code>credentials/gemini_key.txt</code> com a chave dentro.
+  </div>
+</div>
+
+<div class="card" style="margin-top:16px;">
+  <h2>🛠️ Armazenamento</h2>
+  <p class="muted" id="storage-info">Carregando…</p>
+  <div class="note" style="margin-top:12px;margin-bottom:0;">
+    <b>Firebase:</b> coloque o arquivo <code>serviceAccountKey.json</code> (do console do Firebase, aba "Configurações do projeto → Contas de serviço") na pasta <code>credentials/</code>, ou defina a variável de ambiente <code>GOOGLE_APPLICATION_CREDENTIALS</code> apontando para ele. Sem o arquivo, o sistema usa um arquivo local em <code>data/local_db.json</code>.
+  </div>
+  <div style="margin-top:16px;">
+    <button class="btn danger" onclick="resetAll()">Apagar todos os dados</button>
+  </div>
+</div>
+
+<div class="card" style="margin-top:16px;">
+  <h2>📝 Histórico de reajustes</h2>
+  <p class="muted" style="margin-bottom:12px;">Registros dos valores ajustados manualmente com o botão <b>Reajustar</b>.</p>
+  <div id="adjust-history"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function loadStorageInfo() {
+  const meta = await api("/api/meta");
+  const el = document.getElementById("storage-info");
+  el.innerHTML = `Armazenamento ativo: <b>${meta.storage}</b>` +
+    (meta.storage_error ? `<div class="text-red">Falha no Firebase: ${escapeHtml(meta.storage_error)}</div>` : "");
+  loadGeminiStatus();
+  loadAdjustHistory();
+}
+
+async function loadAdjustHistory() {
+  try {
+    const rows = await api("/api/adjustments");
+    const el = document.getElementById("adjust-history");
+    if (!rows.length) {
+      el.innerHTML = `<p class="muted">Nenhum reajuste registrado ainda.</p>`;
+      return;
+    }
+    const labels = { balance: "Saldo", quantity: "Quantidade", avg_price: "Preço médio", current_price: "Preço atual", monthly_value: "Valor da parcela", paid: "Parcelas pagas", amount: "Valor", limit: "Limite" };
+    el.innerHTML = `<table>
+      <thead><tr><th>Data</th><th>Entidade</th><th>Campo</th><th class="num">Antes</th><th class="num">Depois</th><th>Motivo</th></tr></thead>
+      <tbody>${rows.map((a) => {
+        const kind = a.entity_type === "accounts" ? "Conta" : a.entity_type === "boxes" ? "Caixinha" : a.entity_type === "investments" ? "Investimento" : a.entity_type === "financings" ? "Financiamento" : a.entity_type === "recurring" ? "Recorrente" : a.entity_type === "cards" ? "Cartão" : a.entity_type;
+        return `<tr>
+          <td class="muted">${fmtDate(a.date)}</td>
+          <td><b>${escapeHtml(a.entity_name || a.entity_id)}</b> <span class="muted">(${kind})</span></td>
+          <td><span class="tag">${labels[a.field] || escapeHtml(a.field)}</span></td>
+          <td class="num">${fmt(a.old_value)}</td>
+          <td class="num"><b>${fmt(a.new_value)}</b></td>
+          <td class="muted">${escapeHtml(a.note || "—")}</td>
+        </tr>`;
+      }).join("")}</tbody>
+    </table>`;
+  } catch (err) {
+    document.getElementById("adjust-history").innerHTML = `<p class="muted">Não foi possível carregar: ${escapeHtml(err.message)}</p>`;
+  }
+}
+
+async function loadGeminiStatus() {
+  try {
+    const s = await api("/api/ai/status");
+    const el = document.getElementById("gemini-status");
+    el.innerHTML = s.configured
+      ? `<span class="tag green">✓ Chave configurada (${escapeHtml(s.model)})</span>`
+      : `<span class="tag amber">Sem chave configurada</span>`;
+  } catch (_) {}
+}
+
+async function saveGeminiKey() {
+  const key = document.getElementById("gemini-key").value.trim();
+  if (!key) return toast("Cole a chave da API primeiro", true);
+  try {
+    const r = await api("/api/ai/key", { method: "PUT", body: { key } });
+    document.getElementById("gemini-key").value = "";
+    toast("Chave da IA salva");
+    loadGeminiStatus();
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+document.getElementById("import-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const file = document.getElementById("import-file").files[0];
+  if (!file) return;
+  const mode = document.getElementById("import-mode").value;
+  if (mode === "replace" && !confirm("Substituir TODOS os dados atuais pelos do arquivo?")) return;
+
+  const fd = new FormData();
+  fd.append("file", file);
+  fd.append("mode", mode);
+  const btn = e.target.querySelector("button[type=submit]");
+  btn.disabled = true;
+  btn.textContent = "Importando…";
+  try {
+    const res = await fetch("/api/import", { method: "POST", body: fd });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Erro ao importar");
+    const counts = Object.entries(data.counts).map(([k, v]) => {
+      if (typeof v === "object") {
+        const bits = [];
+        if (v.added) bits.push(`+${v.added}`);
+        if (v.updated) bits.push(`~${v.updated} atualizados`);
+        if (v.skipped) bits.push(`=${v.skipped} duplicados`);
+        return `${k}: ${bits.join(" ")}`;
+      }
+      return `${k}: ${v}`;
+    }).join(" · ");
+    document.getElementById("import-result").innerHTML = `<div class="note" style="margin-top:14px;border-left-color:var(--green);color:var(--text);">✔ Importado: ${counts}</div>`;
+    toast("Importação concluída");
+  } catch (err) {
+    document.getElementById("import-result").innerHTML = `<div class="note" style="margin-top:14px;border-left-color:var(--red);color:var(--red);">✖ ${escapeHtml(err.message)}</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Importar";
+  }
+});
+
+async function resetAll() {
+  if (!confirm("Isso apagará TODOS os dados. Deseja continuar?")) return;
+  if (!confirm("Tem certeza? Esta ação não pode ser desfeita.")) return;
+  await api("/api/reset", { method: "POST" });
+  toast("Dados apagados");
+}
+
+document.addEventListener("DOMContentLoaded", loadStorageInfo);
+</script>
+{% endblock %}

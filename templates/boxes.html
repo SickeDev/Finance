@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+{% block title %}Caixinhas · Finanças{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>🪙 Caixinhas</h1>
+  <button class="btn" onclick="openModal('box-modal')">+ Nova caixinha</button>
+</div>
+<div class="grid cols-3" id="box-summary" style="margin-bottom:16px;"></div>
+<div id="boxes-grid" class="grid cols-3"></div>
+
+<div class="modal-backdrop" id="box-modal">
+  <div class="modal">
+    <button class="close" onclick="closeModal('box-modal')">&times;</button>
+    <h3 id="box-modal-title">Nova caixinha</h3>
+    <form id="box-form">
+      <input type="hidden" id="f-id">
+      <label>Nome</label>
+      <input id="f-name" required placeholder="Reserva de emergência, Viagem…">
+      <label>Banco (conta onde o dinheiro está)</label>
+      <select id="f-account"><option value="">(nenhum — caixinha separada)</option></select>
+      <label>Meta (R$)</label>
+      <input id="f-target" type="number" step="0.01" value="0">
+      <label>Saldo atual (R$)</label>
+      <input id="f-balance" type="number" step="0.01" value="0">
+      <label style="margin-top:12px;"><input type="checkbox" id="f-emergency" style="width:auto;margin-right:6px;">É reserva de emergência</label>
+      <div class="form-actions">
+        <button type="button" class="btn ghost" onclick="closeModal('box-modal')">Cancelar</button>
+        <button type="submit" class="btn">Salvar</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let boxAccounts = [];
+
+async function load() {
+  const [boxes, accounts] = await Promise.all([api("/api/boxes"), api("/api/accounts")]);
+  boxAccounts = accounts;
+  const accSelect = document.getElementById("f-account");
+  accSelect.innerHTML = `<option value="">(nenhum — caixinha separada)</option>` +
+    accounts.map((a) => `<option value="${a.id}">${escapeHtml(a.name)}</option>`).join("");
+  const accName = (id) => {
+    const a = accounts.find((x) => x.id === id);
+    return a ? a.name : null;
+  };
+
+  const total = boxes.reduce((s, b) => s + Number(b.balance || 0), 0);
+  const totalTarget = boxes.reduce((s, b) => s + Number(b.target || 0), 0);
+  const emergency = boxes.filter((b) => b.is_emergency).reduce((s, b) => s + Number(b.balance || 0), 0);
+  const pct = totalTarget > 0 ? Math.round((total / totalTarget) * 100) : 0;
+
+  document.getElementById("box-summary").innerHTML = `
+    <div class="card kpi"><div class="label">Caixinhas</div><div class="value text-accent">${boxes.length}</div></div>
+    <div class="card kpi"><div class="label">Guardado</div><div class="value text-green">${fmt(total)} <span class="muted">(${pct}% da meta)</span></div></div>
+    <div class="card kpi"><div class="label">Reserva de emergência</div><div class="value text-amber">${fmt(emergency)}</div></div>`;
+
+  const grid = document.getElementById("boxes-grid");
+  if (!boxes.length) {
+    grid.innerHTML = `<div class="card empty">Nenhuma caixinha ainda.</div>`;
+    return;
+  }
+  grid.innerHTML = boxes.map((b) => {
+    const target = Number(b.target || 0);
+    const bal = Number(b.balance || 0);
+    const p = target > 0 ? Math.min(100, Math.round((bal / target) * 100)) : (bal > 0 ? 100 : 0);
+    const bank = accName(b.account_id);
+    return `<div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <h2>🪙 ${escapeHtml(b.name)}</h2>
+        ${b.is_emergency ? `<span class="tag amber">Emergência</span>` : ""}
+      </div>
+      ${bank ? `<div class="muted">🏦 ${escapeHtml(bank)}</div>` : `<div class="muted">🧺 Fora dos bancos</div>`}
+      <div class="value" style="font-size:22px;font-weight:700;color:var(--green);margin:10px 0;">${fmt(bal)}</div>
+      ${target > 0 ? `
+        <div class="muted" style="display:flex;justify-content:space-between;"><span>Meta ${fmt(target)}</span><span>${p}%</span></div>
+        <div class="progress" style="margin-top:6px;"><div style="width:${p}%;${p >= 100 ? "background:var(--green);" : ""}"></div></div>` : ""}
+      <div class="row-actions" style="margin-top:12px;">
+        <button class="btn ghost small" onclick="editBox('${b.id}')">Editar</button>
+        <button class="btn ghost small" onclick="openAdjust('boxes','${b.id}','${escapeHtml(b.name)}',[{field:'balance',label:'Saldo',value:Number(b.balance||0)}])">Reajustar</button>
+        <button class="btn danger small" onclick="delBox('${b.id}')">Excluir</button>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+function editBox(id) {
+  api("/api/boxes").then((list) => {
+    const b = list.find((x) => x.id === id);
+    document.getElementById("box-modal-title").textContent = "Editar caixinha";
+    document.getElementById("f-id").value = b.id;
+    document.getElementById("f-name").value = b.name || "";
+    document.getElementById("f-account").value = b.account_id || "";
+    document.getElementById("f-target").value = b.target ?? 0;
+    document.getElementById("f-balance").value = b.balance ?? 0;
+    document.getElementById("f-emergency").checked = !!b.is_emergency;
+    openModal("box-modal");
+  });
+}
+
+async function delBox(id) {
+  if (!confirmDelete()) return;
+  try {
+    await delWithForce(`/api/boxes/${id}`);
+    toast("Caixinha excluída");
+  } catch (err) {
+    toast(err.message, true);
+  }
+  load();
+}
+
+document.getElementById("box-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const id = document.getElementById("f-id").value;
+  const payload = {
+    name: document.getElementById("f-name").value,
+    account_id: document.getElementById("f-account").value,
+    target: Number(document.getElementById("f-target").value) || 0,
+    balance: Number(document.getElementById("f-balance").value) || 0,
+    is_emergency: document.getElementById("f-emergency").checked,
+  };
+  if (id) await api(`/api/boxes/${id}`, { method: "PUT", body: payload });
+  else await api("/api/boxes", { method: "POST", body: payload });
+  closeModal("box-modal");
+  toast(id ? "Caixinha atualizada" : "Caixinha criada");
+  load();
+});
+
+document.addEventListener("DOMContentLoaded", load);
+</script>
+{% endblock %}

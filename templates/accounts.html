@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+{% block title %}Contas · Finanças{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>💳 Contas</h1>
+  <button class="btn" onclick="openModal('account-modal')">+ Nova conta</button>
+</div>
+<div class="grid cols-3" style="margin-bottom:16px;" id="totals"></div>
+<div class="card">
+  <table>
+    <thead><tr><th>Nome</th><th>Instituição</th><th>Tipo</th><th class="num">Saldo</th><th></th></tr></thead>
+    <tbody id="accounts-body"></tbody>
+  </table>
+</div>
+
+<div class="modal-backdrop" id="account-modal">
+  <div class="modal">
+    <button class="close" onclick="closeModal('account-modal')">&times;</button>
+    <h3 id="account-modal-title">Nova conta</h3>
+    <form id="account-form">
+      <input type="hidden" id="f-id">
+      <label>Nome</label>
+      <input id="f-name" required>
+      <label>Instituição</label>
+      <input id="f-institution" placeholder="Nubank, Mercado Pago…">
+      <div class="form-grid">
+        <div>
+          <label>Tipo</label>
+          <select id="f-type">
+            <option>Conta corrente</option>
+            <option>Poupança</option>
+            <option>Carteira digital</option>
+          </select>
+        </div>
+        <div>
+          <label>Saldo (R$)</label>
+          <input id="f-balance" type="number" step="0.01" value="0">
+        </div>
+      </div>
+      <div class="form-actions">
+        <button type="button" class="btn ghost" onclick="closeModal('account-modal')">Cancelar</button>
+        <button type="submit" class="btn">Salvar</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function load() {
+  const [accounts, boxes, investments, meta] = await Promise.all([
+    api("/api/accounts"), api("/api/boxes"), api("/api/investments"), api("/api/meta"),
+  ]);
+  const total = accounts.reduce((s, a) => s + Number(a.balance || 0), 0);
+  document.getElementById("totals").innerHTML = `
+    <div class="card kpi"><div class="label">Contas</div><div class="value text-accent">${accounts.length}</div></div>
+    <div class="card kpi"><div class="label">Saldo total</div><div class="value text-green">${fmt(total)}</div></div>
+    <div class="card kpi"><div class="label">Com saldo informado</div><div class="value">${accounts.filter(a => Number(a.balance) !== 0).length}</div></div>`;
+
+  const body = document.getElementById("accounts-body");
+  if (!accounts.length) {
+    body.innerHTML = `<tr><td colspan="5" class="empty">Nenhuma conta. Cadastre a primeira.</td></tr>`;
+    return;
+  }
+  const accBoxes = (id) => boxes.filter((b) => b.account_id === id);
+  const accInvs = (id) => investments.filter((i) => i.account_id === id);
+  body.innerHTML = accounts.map((a) => {
+    const bs = accBoxes(a.id);
+    const invs = accInvs(a.id);
+    const free = Number(a.balance || 0) - bs.reduce((s, b) => s + Number(b.balance || 0), 0) - invs.reduce((s, i) => s + Number(i.quantity || 0) * Number(i.current_price || 0), 0);
+    const detail = [];
+    if (bs.length) detail.push(`🪙 ${bs.length} caixinhas (${fmt(bs.reduce((s, b) => s + Number(b.balance || 0), 0))})`);
+    if (invs.length) detail.push(`📈 ${invs.length} ativos (${fmt(invs.reduce((s, i) => s + Number(i.quantity || 0) * Number(i.current_price || 0), 0))})`);
+    return `
+    <tr>
+      <td><b>${escapeHtml(a.name)}</b>
+        <div class="muted">Livre: ${fmt(free)}</div>
+        ${detail.length ? `<div class="muted">${detail.join(" · ")}</div>` : ""}
+      </td>
+      <td class="muted">${escapeHtml(a.institution || "—")}</td>
+      <td><span class="tag">${escapeHtml(a.type || "Conta corrente")}</span></td>
+      <td class="num ${Number(a.balance) >= 0 ? "text-green" : "text-red"}">${fmt(a.balance)}</td>
+      <td class="row-actions">
+        <button class="btn ghost small" onclick="editAccount('${a.id}')">Editar</button>
+        <button class="btn ghost small" onclick="openAdjust('accounts','${a.id}','${escapeHtml(a.name)}',[{field:'balance',label:'Saldo',value:Number(a.balance||0)}])">Reajustar</button>
+        <button class="btn danger small" onclick="delAccount('${a.id}')">Excluir</button>
+      </td>
+    </tr>`;
+  }).join("");
+}
+
+async function editAccount(id) {
+  const list = await api("/api/accounts");
+  const a = list.find((x) => x.id === id);
+  document.getElementById("account-modal-title").textContent = "Editar conta";
+  document.getElementById("f-id").value = a.id;
+  document.getElementById("f-name").value = a.name || "";
+  document.getElementById("f-institution").value = a.institution || "";
+  document.getElementById("f-type").value = a.type || "Conta corrente";
+  document.getElementById("f-balance").value = a.balance ?? 0;
+  openModal("account-modal");
+}
+
+async function delAccount(id) {
+  if (!confirmDelete()) return;
+  try {
+    await delWithForce(`/api/accounts/${id}`, "A conta tem caixinhas/investimentos/transações vinculados.");
+    toast("Conta excluída");
+  } catch (err) {
+    toast(err.message, true);
+  }
+  load();
+}
+
+document.getElementById("account-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const id = document.getElementById("f-id").value;
+  const payload = {
+    name: document.getElementById("f-name").value,
+    institution: document.getElementById("f-institution").value,
+    type: document.getElementById("f-type").value,
+    balance: Number(document.getElementById("f-balance").value) || 0,
+  };
+  if (id) {
+    await api(`/api/accounts/${id}`, { method: "PUT", body: payload });
+  } else {
+    await api("/api/accounts", { method: "POST", body: payload });
+  }
+  closeModal("account-modal");
+  toast(id ? "Conta atualizada" : "Conta criada");
+  load();
+});
+
+document.addEventListener("DOMContentLoaded", load);
+</script>
+{% endblock %}

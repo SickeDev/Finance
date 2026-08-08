@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<finance-export version="1.0" date="2026-08-07" currency="BRL">
+  <accounts>
+    <item id="acc-nubank">
+      <name>Nubank</name>
+      <institution>Nubank</institution>
+      <type>Conta corrente</type>
+      <balance>2500</balance>
+    </item>
+    <item id="acc-mp">
+      <name>Mercado Pago</name>
+      <institution>Mercado Pago</institution>
+      <type>Carteira digital</type>
+      <balance>800</balance>
+    </item>
+  </accounts>
+  <cards>
+    <item id="card-nubank">
+      <name>Nubank Ultravioleta</name>
+      <brand>Mastercard</brand>
+      <limit>10000</limit>
+      <due_day>10</due_day>
+    </item>
+  </cards>
+  <card_purchases>
+    <item id="compra1">
+      <card_id>card-nubank</card_id>
+      <date>2026-07-20</date>
+      <description>Moto pecas</description>
+      <category>Transporte</category>
+      <amount>1200</amount>
+      <installments>6</installments>
+      <paid_count>1</paid_count>
+      <finished>false</finished>
+    </item>
+  </card_purchases>
+  <boxes>
+    <item id="caixa-emerg">
+      <name>Reserva de emergencia</name>
+      <target>30000</target>
+      <balance>12500</balance>
+      <is_emergency>true</is_emergency>
+    </item>
+    <item id="caixa-viagem">
+      <name>Viagem</name>
+      <target>5000</target>
+      <balance>2300</balance>
+      <is_emergency>false</is_emergency>
+    </item>
+  </boxes>
+  <investments>
+    <item id="inv-mxrf11">
+      <name>MXRF11</name>
+      <ticker>MXRF11</ticker>
+      <type>FII</type>
+      <quantity>300</quantity>
+      <avg_price>9.5</avg_price>
+      <current_price>10.1</current_price>
+    </item>
+    <item id="inv-btc">
+      <name>Bitcoin</name>
+      <ticker>BTC</ticker>
+      <type>Cripto</type>
+      <quantity>0.05</quantity>
+      <avg_price>320000</avg_price>
+      <current_price>340000</current_price>
+    </item>
+  </investments>
+  <financings>
+    <item id="fin-fan">
+      <name>Fan 160</name>
+      <category>Transporte</category>
+      <monthly_value>580</monthly_value>
+      <installments_total>36</installments_total>
+      <paid>12</paid>
+      <due_day>5</due_day>
+      <start_date>2025-09-01</start_date>
+    </item>
+  </financings>
+  <recurring>
+    <item id="rec-internet">
+      <name>Internet</name>
+      <category>Moradia</category>
+      <amount>99.9</amount>
+      <frequency>Mensal</frequency>
+      <due_day>15</due_day>
+      <account_id>acc-nubank</account_id>
+      <active>true</active>
+    </item>
+  </recurring>
+  <transactions>
+    <item id="tx-salario">
+      <date>2026-08-05</date>
+      <description>Salario</description>
+      <amount>5000</amount>
+      <type>income</type>
+      <category>Salário</category>
+      <account_id>acc-nubank</account_id>
+      <method>Pix</method>
+    </item>
+  </transactions>
+  <networth>
+    <item id="snap1">
+      <date>2026-08-01</date>
+      <total>18320</total>
+    </item>
+  </networth>
+</finance-export>

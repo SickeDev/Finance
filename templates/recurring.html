@@ -1,0 +1,166 @@
+{% extends "base.html" %}
+{% block title %}Recorrentes · Finanças{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>📅 Contas recorrentes</h1>
+  <button class="btn" onclick="openModal('rec-modal')">+ Nova recorrente</button>
+</div>
+<div class="note">Clique em <b>Pagar agora</b> para lançar a despesa do mês na conta escolhida (registra em Transações).</div>
+<div class="card">
+  <table>
+    <thead><tr><th>Nome</th><th>Cat.</th><th>Frequência</th><th class="num">Valor</th><th>Status</th><th>Conta</th><th></th></tr></thead>
+    <tbody id="rec-body"></tbody>
+  </table>
+</div>
+
+<div class="modal-backdrop" id="rec-modal">
+  <div class="modal">
+    <button class="close" onclick="closeModal('rec-modal')">&times;</button>
+    <h3 id="rec-modal-title">Nova conta recorrente</h3>
+    <form id="rec-form">
+      <input type="hidden" id="f-id">
+      <label>Nome</label>
+      <input id="f-name" required placeholder="Internet, Aluguel, Netflix…">
+      <label>Categoria</label>
+      <select id="f-category"></select>
+      <div class="form-grid">
+        <div>
+          <label>Valor (R$)</label>
+          <input id="f-amount" type="number" step="0.01" value="0">
+        </div>
+        <div>
+          <label>Frequência</label>
+          <select id="f-frequency"><option>Mensal</option><option>Semanal</option><option>Anual</option></select>
+        </div>
+      </div>
+      <div class="form-grid">
+        <div>
+          <label>Vencimento (dia)</label>
+          <input id="f-due_day" type="number" min="1" max="31" value="10">
+        </div>
+        <div>
+          <label>Conta para pagar</label>
+          <select id="f-account"></select>
+        </div>
+      </div>
+      <label style="margin-top:12px;"><input type="checkbox" id="f-active" style="width:auto;margin-right:6px;" checked>Ativa</label>
+      <div class="form-actions">
+        <button type="button" class="btn ghost" onclick="closeModal('rec-modal')">Cancelar</button>
+        <button type="submit" class="btn">Salvar</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function load() {
+  const [recs, accounts, payments, meta] = await Promise.all([
+    api("/api/recurring"), api("/api/accounts"), api("/api/payments"), api("/api/meta"),
+  ]);
+  const catSelect = document.getElementById("f-category");
+  catSelect.innerHTML = meta.categories.map((c) => `<option>${c}</option>`).join("");
+  const accSelect = document.getElementById("f-account");
+  accSelect.innerHTML = `<option value="">(sem conta)</option>` +
+    accounts.map((a) => `<option value="${a.id}">${escapeHtml(a.name)}</option>`).join("");
+  const paidThisMonth = (id) => (payments || []).some(
+    (p) => p.kind === "recurring" && p.ref_id === id && (p.date || "").slice(0, 7) === currentMonth()
+  );
+
+  const body = document.getElementById("rec-body");
+  if (!recs.length) {
+    body.innerHTML = `<tr><td colspan="7" class="empty">Nenhuma conta recorrente ainda.</td></tr>`;
+    return;
+  }
+  body.innerHTML = recs.map((r) => {
+    const acc = accounts.find((a) => a.id === r.account_id);
+    const paid = paidThisMonth(r.id);
+    return `<tr>
+      <td><b>${escapeHtml(r.name)}</b> ${r.active === false ? `<span class="tag">Inativa</span>` : ""}</td>
+      <td><span class="tag">${escapeHtml(r.category || "Outros")}</span></td>
+      <td class="muted">${escapeHtml(r.frequency || "Mensal")} · dia ${r.due_day || "—"}</td>
+      <td class="num"><b>${fmt(r.amount)}</b></td>
+      <td>${paid ? `<span class="tag green">Pago este mês</span>` : `<span class="muted">Pendente</span>`}</td>
+      <td class="muted">${acc ? escapeHtml(acc.name) : "—"}</td>
+      <td class="row-actions">
+        ${acc && r.active !== false && !paid ? `<button class="btn small" onclick="payRec('${r.id}')">Pagar agora</button>` : ""}
+        ${paid ? `<button class="btn ghost small" onclick="unpayRec('${r.id}')">Estornar</button>` : ""}
+        <button class="btn ghost small" onclick="editRec('${r.id}')">Editar</button>
+        <button class="btn ghost small" onclick="openAdjust('recurring','${r.id}','${escapeHtml(r.name)}',[{field:'amount',label:'Valor',value:Number(r.amount||0)}])">Reajustar</button>
+        <button class="btn danger small" onclick="delRec('${r.id}')">Excluir</button>
+      </td>
+    </tr>`;
+  }).join("");
+}
+
+async function payRec(id) {
+  try {
+    await api(`/api/recurring/${id}/pay`, { method: "POST", body: {} });
+    toast("Despesa lançada em Transações");
+  } catch (err) {
+    toast(err.message, true);
+  }
+  load();
+}
+
+async function unpayRec(id) {
+  if (!confirm("Estornar o pagamento desta conta no mês atual?")) return;
+  try {
+    await api(`/api/recurring/${id}/unpay`, { method: "POST" });
+    toast("Pagamento estornado");
+  } catch (err) {
+    toast(err.message, true);
+  }
+  load();
+}
+
+function editRec(id) {
+  api("/api/recurring").then((list) => {
+    const r = list.find((x) => x.id === id);
+    document.getElementById("rec-modal-title").textContent = "Editar recorrente";
+    document.getElementById("f-id").value = r.id;
+    document.getElementById("f-name").value = r.name || "";
+    document.getElementById("f-category").value = r.category || "Outros";
+    document.getElementById("f-amount").value = r.amount ?? 0;
+    document.getElementById("f-frequency").value = r.frequency || "Mensal";
+    document.getElementById("f-due_day").value = r.due_day || 10;
+    document.getElementById("f-account").value = r.account_id || "";
+    document.getElementById("f-active").checked = r.active !== false;
+    openModal("rec-modal");
+  });
+}
+
+async function delRec(id) {
+  if (!confirmDelete()) return;
+  try {
+    await delWithForce(`/api/recurring/${id}`, "A recorrente tem pagamentos vinculados.");
+    toast("Recorrente excluída");
+  } catch (err) {
+    toast(err.message, true);
+  }
+  load();
+}
+
+document.getElementById("rec-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const id = document.getElementById("f-id").value;
+  const payload = {
+    name: document.getElementById("f-name").value,
+    category: document.getElementById("f-category").value,
+    amount: Number(document.getElementById("f-amount").value) || 0,
+    frequency: document.getElementById("f-frequency").value,
+    due_day: Number(document.getElementById("f-due_day").value) || 10,
+    account_id: document.getElementById("f-account").value,
+    active: document.getElementById("f-active").checked,
+  };
+  if (id) await api(`/api/recurring/${id}`, { method: "PUT", body: payload });
+  else await api("/api/recurring", { method: "POST", body: payload });
+  closeModal("rec-modal");
+  toast(id ? "Recorrente atualizada" : "Recorrente criada");
+  load();
+});
+
+document.addEventListener("DOMContentLoaded", load);
+</script>
+{% endblock %}

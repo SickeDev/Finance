@@ -1,0 +1,171 @@
+{% extends "base.html" %}
+{% block title %}Movimentações · Finanças{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>🔁 Movimentações</h1>
+</div>
+
+<div class="card" style="max-width:520px;margin-bottom:16px;">
+  <h3>Transferir dinheiro</h3>
+  <form id="transfer-form">
+    <div class="grid cols-2">
+      <div>
+        <label>De (origem)</label>
+        <select id="f-from-type">
+          <option value="account">Conta</option>
+          <option value="box">Caixinha</option>
+          <option value="investment">Investimento</option>
+        </select>
+        <select id="f-from-id"></select>
+      </div>
+      <div>
+        <label>Para (destino)</label>
+        <select id="f-to-type">
+          <option value="account">Conta</option>
+          <option value="box" selected>Caixinha</option>
+          <option value="investment">Investimento</option>
+        </select>
+        <select id="f-to-id"></select>
+      </div>
+    </div>
+    <div class="grid cols-2">
+      <div>
+        <label>Valor (R$)</label>
+        <input id="f-amount" type="number" step="0.01" min="0.01" required placeholder="0,00">
+      </div>
+      <div>
+        <label>Data</label>
+        <input id="f-date" type="date" required>
+      </div>
+    </div>
+    <label>Descrição</label>
+    <input id="f-description" placeholder="Ex.: Transferência Fan">
+    <div class="form-actions">
+      <button type="submit" class="btn">Transferir</button>
+    </div>
+  </form>
+</div>
+
+<div id="transfer-history">
+  <h3 style="margin-bottom:8px;">Histórico</h3>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let entities = { account: [], box: [], investment: [] };
+
+const TYPE_LABELS = { account: "Conta", box: "Caixinha", investment: "Investimento" };
+
+function populate(id) {
+  const typeId = id === "f-from-id" ? "f-from-type" : "f-to-type";
+  const t = document.getElementById(typeId).value;
+  const list = entities[t];
+  if (!list || !list.length) {
+    document.getElementById(id).innerHTML = `<option value="">— sem itens —</option>`;
+    return;
+  }
+  document.getElementById(id).innerHTML = list
+    .map((e) => {
+      const v = t === "investment"
+        ? Number(e.quantity || 0) * Number(e.current_price || 0)
+        : Number(e.balance || 0);
+      return `<option value="${e.id}">${escapeHtml(e.name)} (${fmt(v)})</option>`;
+    })
+    .join("");
+}
+
+function populateBoth() {
+  ["f-from-id", "f-to-id"].forEach(populate);
+}
+
+function entityName(type, id) {
+  const e = (entities[type] || []).find((x) => x.id === id);
+  return e ? e.name : (id || "—");
+}
+
+function entityValue(type, id) {
+  const e = (entities[type] || []).find((x) => x.id === id);
+  if (!e) return 0;
+  return type === "investment" ? Number(e.quantity || 0) * Number(e.current_price || 0) : Number(e.balance || 0);
+}
+
+function loadHistory(transfers) {
+  const box = document.getElementById("transfer-history");
+  if (!transfers.length) {
+    box.innerHTML += `<div class="card empty">Nenhuma movimentação ainda.</div>`;
+    return;
+  }
+  const table = `<div class="card" style="padding:0;"><table class="data-table">
+    <thead><tr><th>Data</th><th>Descrição</th><th>Origem</th><th>Destino</th><th style="text-align:right;">Valor</th><th></th></tr></thead>
+    <tbody>
+      ${transfers.map((t) => `<tr>
+        <td>${fmtDate(t.date)}</td>
+        <td>${escapeHtml(t.description || "Transferência")}</td>
+        <td>${TYPE_LABELS[t.from_type] || ""} · ${escapeHtml(entityName(t.from_type, t.from_id))}</td>
+        <td>${TYPE_LABELS[t.to_type] || ""} · ${escapeHtml(entityName(t.to_type, t.to_id))}</td>
+        <td style="text-align:right;color:var(--amber);">${fmt(t.amount)}</td>
+        <td><button class="btn danger small" onclick="delTransfer('${t.id}')">Excluir</button></td>
+      </tr>`).join("")}
+    </tbody>
+  </table></div>`;
+  box.innerHTML += table;
+}
+
+async function load() {
+  document.getElementById("f-date").value = todayISO();
+  const [accounts, boxes, investments, transfers] = await Promise.all([
+    api("/api/accounts"),
+    api("/api/boxes"),
+    api("/api/investments"),
+    api("/api/transfers"),
+  ]);
+  entities = { account: accounts, box: boxes, investment: investments };
+  populateBoth();
+  loadHistory(transfers);
+}
+
+async function delTransfer(id) {
+  if (!confirmDelete("Reverter esta movimentação (estornos de origem e destino)?")) return;
+  try {
+    await api(`/api/transfers/${id}`, { method: "DELETE" });
+    toast("Movimentação revertida");
+  } catch (err) {
+    toast(err.message, true);
+  }
+  document.getElementById("transfer-history").innerHTML = `<h3 style="margin-bottom:8px;">Histórico</h3>`;
+  load();
+}
+
+document.getElementById("transfer-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const payload = {
+    from_type: document.getElementById("f-from-type").value,
+    from_id: document.getElementById("f-from-id").value,
+    to_type: document.getElementById("f-to-type").value,
+    to_id: document.getElementById("f-to-id").value,
+    amount: Number(document.getElementById("f-amount").value) || 0,
+    date: document.getElementById("f-date").value,
+    description: document.getElementById("f-description").value,
+  };
+  if (!payload.from_id || !payload.to_id) return toast("Escolha origem e destino", true);
+  if (payload.from_type === payload.to_type && payload.from_id === payload.to_id)
+    return toast("Origem e destino devem ser diferentes", true);
+  try {
+    await api("/api/transfers", { method: "POST", body: payload });
+    toast("Transferência realizada");
+    document.getElementById("f-amount").value = "";
+    document.getElementById("f-description").value = "";
+    document.getElementById("transfer-history").innerHTML = `<h3 style="margin-bottom:8px;">Histórico</h3>`;
+    load();
+  } catch (err) {
+    toast(err.message, true);
+  }
+});
+
+document.getElementById("f-from-type").addEventListener("change", () => populate("f-from-id"));
+document.getElementById("f-to-type").addEventListener("change", () => populate("f-to-id"));
+
+document.addEventListener("DOMContentLoaded", load);
+</script>
+{% endblock %}

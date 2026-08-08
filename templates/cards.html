@@ -1,0 +1,334 @@
+{% extends "base.html" %}
+{% block title %}Cartões · Finanças{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>💳 Cartões de crédito</h1>
+  <button class="btn" onclick="openModal('card-modal')">+ Novo cartão</button>
+</div>
+<div class="note">
+  Cada compra parcelada gera <b>N parcelas</b> de valor igual. A fatura mostra as parcelas com vencimento no mês atual.
+  Use <b>Pagar fatura</b> para registrar o pagamento (lança a despesa na conta escolhida).
+</div>
+<div class="grid cols-3" id="card-summary"></div>
+<div id="cards-container" style="margin-top:16px;"></div>
+
+<div class="modal-backdrop" id="card-modal">
+  <div class="modal">
+    <button class="close" onclick="closeModal('card-modal')">&times;</button>
+    <h3 id="card-modal-title">Novo cartão</h3>
+    <form id="card-form">
+      <input type="hidden" id="f-id">
+      <label>Nome</label>
+      <input id="f-name" required>
+      <label>Bandeira</label>
+      <input id="f-brand" placeholder="Visa, Master, Elo…">
+      <div class="form-grid">
+        <div>
+          <label>Limite (R$)</label>
+          <input id="f-limit" type="number" step="0.01" value="0">
+        </div>
+        <div>
+          <label>Dia do vencimento</label>
+          <input id="f-due_day" type="number" min="1" max="31" value="10">
+        </div>
+      </div>
+      <div class="form-actions">
+        <button type="button" class="btn ghost" onclick="closeModal('card-modal')">Cancelar</button>
+        <button type="submit" class="btn">Salvar</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="purchase-modal">
+  <div class="modal">
+    <button class="close" onclick="closeModal('purchase-modal')">&times;</button>
+    <h3 id="purchase-modal-title">Nova compra</h3>
+    <form id="purchase-form">
+      <input type="hidden" id="p-id">
+      <label>Cartão</label>
+      <select id="p-card" required></select>
+      <label>Data</label>
+      <input id="p-date" type="date" required>
+      <label>Descrição</label>
+      <input id="p-description" required>
+      <label>Categoria</label>
+      <select id="p-category"></select>
+      <div class="form-grid">
+        <div>
+          <label>Valor total (R$)</label>
+          <input id="p-amount" type="number" step="0.01" min="0" value="0" required>
+        </div>
+        <div>
+          <label>Parcelas</label>
+          <input id="p-installments" type="number" min="1" max="48" value="1" required>
+        </div>
+      </div>
+      <div class="form-actions">
+        <button type="button" class="btn ghost" onclick="closeModal('purchase-modal')">Cancelar</button>
+        <button type="submit" class="btn">Salvar</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let state = { cards: [], purchases: [], accounts: [], categories: [] };
+
+async function load() {
+  const [cards, purchases, accounts, meta] = await Promise.all([
+    api("/api/cards"), api("/api/card_purchases"), api("/api/accounts"), api("/api/meta"),
+  ]);
+  state = { cards, purchases, accounts, categories: meta.categories };
+
+  const cardSelect = document.getElementById("p-card");
+  cardSelect.innerHTML = cards.map((c) => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join("");
+
+  const catSelect = document.getElementById("p-category");
+  catSelect.innerHTML = meta.categories.map((c) => `<option>${c}</option>`).join("");
+
+  renderSummary();
+  renderCards();
+}
+
+function monthly(p) {
+  return (Number(p.amount || 0) / Math.max(1, Number(p.installments || 1)));
+}
+
+function nextDue(p) {
+  const d = new Date(p.date + "T00:00:00");
+  let m = d.getMonth() + (Number(p.paid_count) || 0);
+  let y = d.getFullYear();
+  y += Math.floor(m / 12);
+  m = ((m % 12) + 12) % 12;
+  return `${y}-${String(m + 1).padStart(2, "0")}`;
+}
+
+function invoiceFor(cardId, purchases, month) {
+  const list = purchases.filter((p) => p.card_id === cardId && !p.finished && nextDue(p) === month);
+  const total = list.reduce((s, p) => s + monthly(p), 0);
+  return { list, total };
+}
+
+function renderSummary() {
+  const month = currentMonth();
+  let totalInvoice = 0;
+  let totalLimit = 0;
+  state.cards.forEach((c) => {
+    totalInvoice += invoiceFor(c.id, state.purchases, month).total;
+    totalLimit += Number(c.limit || 0);
+  });
+  const usedPct = totalLimit > 0 ? Math.round((totalInvoice / totalLimit) * 100) : 0;
+  document.getElementById("card-summary").innerHTML = `
+    <div class="card kpi"><div class="label">Cartões</div><div class="value text-accent">${state.cards.length}</div></div>
+    <div class="card kpi"><div class="label">Fatura do mês</div><div class="value text-red">${fmt(totalInvoice)}</div></div>
+    <div class="card kpi"><div class="label">Limite usado</div><div class="value ${usedPct > 80 ? "text-red" : "text-green"}">${usedPct}%</div></div>`;
+}
+
+function renderCards() {
+  const container = document.getElementById("cards-container");
+  const month = currentMonth();
+  if (!state.cards.length) {
+    container.innerHTML = `<div class="card empty">Nenhum cartão cadastrado.</div>`;
+    return;
+  }
+
+  container.innerHTML = state.cards.map((c) => {
+    const inv = invoiceFor(c.id, state.purchases, month);
+    const limit = Number(c.limit || 0);
+    const pct = limit > 0 ? Math.min(100, Math.round((inv.total / limit) * 100)) : 0;
+    const payKey = `pay-${c.id}`;
+    const active = state.purchases.filter((p) => p.card_id === c.id && !p.finished)
+      .sort((a, b) => nextDue(a).localeCompare(nextDue(b)));
+    const rows = active.length ? active.map((p) => {
+      const inst = Number(p.installments || 1);
+      const pc = Number(p.paid_count || 0);
+      const due = nextDue(p);
+      const dueNow = due === month;
+      return `<tr>
+        <td>${fmtDate(p.date)}</td>
+        <td>${escapeHtml(p.description)}<div class="muted">${pc}/${inst} × ${fmt(monthly(p))}</div></td>
+        <td><span class="tag">${escapeHtml(p.category || "Outros")}</span></td>
+        <td><span class="tag ${dueNow ? "amber" : ""}">Vence ${monthName(due)}</span></td>
+        <td class="num">${fmt(monthly(p))}</td>
+        <td class="row-actions">
+          ${dueNow ? `<button class="btn small" onclick="payPurchase('${p.id}')">Pagar</button>` : ""}
+          ${pc > 0 ? `<button class="btn ghost small" onclick="unpayPurchase('${p.id}')">Estornar</button>` : ""}
+          <button class="btn ghost small" onclick="editPurchase('${p.id}')">Editar</button>
+          <button class="btn danger small" onclick="deletePurchase('${p.id}')">Excluir</button>
+        </td>
+      </tr>`;
+    }).join("") : `<tr><td colspan="6" class="empty">Nenhuma parcela em aberto.</td></tr>`;
+
+    const selId = "pay-" + c.id + "-sel";
+    return `<div class="card" style="margin-bottom:16px;">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;">
+        <div>
+          <h2>${escapeHtml(c.name)} <span class="tag">${escapeHtml(c.brand || "—")}</span></h2>
+          <div class="muted">Vencimento dia ${c.due_day || "—"} · Fatura atual: <b class="text-red">${fmt(inv.total)}</b></div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <button class="btn ghost small" onclick="openPurchase('${c.id}')">+ Nova compra</button>
+          <button class="btn ghost small" onclick="editCard('${c.id}')">Editar</button>
+          <button class="btn ghost small" onclick="openAdjust('cards','${c.id}','${escapeHtml(c.name)}',[{field:'limit',label:'Limite',value:Number(c.limit||0)}])">Reajustar</button>
+          <button class="btn danger small" onclick="delCard('${c.id}')">Excluir</button>
+        </div>
+      </div>
+      ${limit > 0 ? `
+      <div style="margin:12px 0 4px;">
+        <div style="display:flex;justify-content:space-between;" class="muted">
+          <span>Limite usado: ${pct}%</span><span>${fmt(inv.total)} / ${fmt(limit)}</span>
+        </div>
+        <div class="progress" style="margin-top:6px;"><div style="width:${pct}%;${pct > 80 ? "background:var(--red);" : ""}"></div></div>
+      </div>` : ""}
+      <div style="display:flex;gap:10px;align-items:center;margin:12px 0;">
+        <span class="muted">Pagar fatura com:</span>
+        <span id="paybox-${c.id}">${state.accounts.length
+          ? `<select id="${selId}">${state.accounts.map((a) => `<option value="${a.id}">${escapeHtml(a.name)}</option>`).join("")}</select>`
+          : `<span class="muted">(sem conta cadastrada)</span>`}</span>
+        <button class="btn small" onclick="payInvoice('${c.id}', '${selId}')" ${state.accounts.length ? "" : "disabled"}>Pagar fatura</button>
+      </div>
+      <table>
+        <thead><tr><th>Data</th><th>Compra</th><th>Cat.</th><th>Vencimento</th><th class="num">Parcela</th><th></th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+  }).join("");
+}
+
+async function payPurchase(id) {
+  const p = state.purchases.find((x) => x.id === id);
+  if (!p) return;
+  const card = state.cards.find((c) => c.id === p.card_id);
+  const sel = document.getElementById("pay-" + p.card_id + "-sel");
+  try {
+    await api(`/api/card_purchases/${id}/pay`, { method: "POST", body: { account_id: sel ? sel.value : "" } });
+    toast("Parcela paga");
+  } catch (err) {
+    toast(err.message, true);
+  }
+  load();
+}
+
+async function payInvoice(cardId, selId) {
+  const sel = document.getElementById(selId);
+  if (!sel) return;
+  const accountId = sel.value;
+  const inv = invoiceFor(cardId, state.purchases, currentMonth());
+  let paid = 0;
+  try {
+    for (const p of inv.list) {
+      await api(`/api/card_purchases/${p.id}/pay`, { method: "POST", body: { account_id: accountId } });
+      paid += 1;
+    }
+    toast(`Fatura paga: ${paid} parcela(s) lançada(s)`);
+  } catch (err) {
+    toast(err.message, true);
+  }
+  load();
+}
+
+async function deletePurchase(id) {
+  if (!confirmDelete("Excluir esta compra e todas as parcelas?")) return;
+  try {
+    await delWithForce(`/api/card_purchases/${id}`, "A compra tem parcelas pagas vinculadas.");
+    toast("Compra excluída");
+  } catch (err) {
+    toast(err.message, true);
+  }
+  load();
+}
+
+function openPurchase(cardId) {
+  document.getElementById("purchase-modal-title").textContent = "Nova compra";
+  document.getElementById("p-id").value = "";
+  document.getElementById("p-card").value = cardId || state.cards[0]?.id;
+  document.getElementById("p-date").value = todayISO();
+  document.getElementById("p-description").value = "";
+  document.getElementById("p-amount").value = "";
+  document.getElementById("p-installments").value = 1;
+  document.getElementById("p-category").value = "Outros";
+  openModal("purchase-modal");
+}
+
+function editPurchase(id) {
+  const p = state.purchases.find((x) => x.id === id);
+  document.getElementById("purchase-modal-title").textContent = "Editar compra";
+  document.getElementById("p-id").value = p.id;
+  document.getElementById("p-card").value = p.card_id || state.cards[0]?.id;
+  document.getElementById("p-date").value = p.date || todayISO();
+  document.getElementById("p-description").value = p.description || "";
+  document.getElementById("p-amount").value = p.amount ?? 0;
+  document.getElementById("p-installments").value = p.installments ?? 1;
+  document.getElementById("p-category").value = p.category || "Outros";
+  openModal("purchase-modal");
+}
+
+async function unpayPurchase(id) {
+  if (!confirm("Estornar este pagamento (a fatura volta a ficar pendente)?")) return;
+  await api(`/api/card_purchases/${id}/unpay`, { method: "POST" });
+  toast("Pagamento estornado");
+  load();
+}
+
+async function editCard(id) {
+  const c = state.cards.find((x) => x.id === id);
+  document.getElementById("card-modal-title").textContent = "Editar cartão";
+  document.getElementById("f-id").value = c.id;
+  document.getElementById("f-name").value = c.name || "";
+  document.getElementById("f-brand").value = c.brand || "";
+  document.getElementById("f-limit").value = c.limit ?? 0;
+  document.getElementById("f-due_day").value = c.due_day || 10;
+  openModal("card-modal");
+}
+
+async function delCard(id) {
+  if (!confirmDelete()) return;
+  try {
+    await delWithForce(`/api/cards/${id}`, "O cartão tem compras vinculadas.");
+    toast("Cartão excluído");
+  } catch (err) {
+    toast(err.message, true);
+  }
+  load();
+}
+
+document.getElementById("card-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const id = document.getElementById("f-id").value;
+  const payload = {
+    name: document.getElementById("f-name").value,
+    brand: document.getElementById("f-brand").value,
+    limit: Number(document.getElementById("f-limit").value) || 0,
+    due_day: Number(document.getElementById("f-due_day").value) || 10,
+  };
+  if (id) await api(`/api/cards/${id}`, { method: "PUT", body: payload });
+  else await api("/api/cards", { method: "POST", body: payload });
+  closeModal("card-modal");
+  toast(id ? "Cartão atualizado" : "Cartão criado");
+  load();
+});
+
+document.getElementById("purchase-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const id = document.getElementById("p-id").value;
+  const payload = {
+    card_id: document.getElementById("p-card").value,
+    date: document.getElementById("p-date").value || todayISO(),
+    description: document.getElementById("p-description").value,
+    category: document.getElementById("p-category").value,
+    amount: Number(document.getElementById("p-amount").value) || 0,
+    installments: Number(document.getElementById("p-installments").value) || 1,
+  };
+  if (id) await api(`/api/card_purchases/${id}`, { method: "PUT", body: payload });
+  else await api("/api/card_purchases", { method: "POST", body: payload });
+  closeModal("purchase-modal");
+  toast(id ? "Compra atualizada" : "Compra criada");
+  load();
+});
+
+document.addEventListener("DOMContentLoaded", load);
+</script>
+{% endblock %}

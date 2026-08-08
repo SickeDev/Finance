@@ -1,0 +1,327 @@
+{% extends "base.html" %}
+{% block title %}Dashboard · Finanças{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>Dashboard</h1>
+  <span class="muted" id="month-label"></span>
+</div>
+
+<div class="grid cols-4" id="kpis"></div>
+
+<div class="card" style="margin-top:16px;">
+  <h2>🏦 Saldo por banco</h2>
+  <div class="grid cols-2" id="banks-grid"></div>
+</div>
+
+<div class="note" id="neg-note" style="display:none;border-left-color:var(--red);margin-top:16px;">
+  <b>Patrimônio negativo:</b> suas dívidas (R$ <span id="neg-debt"></span>) ainda superam os ativos (R$ <span id="neg-asset"></span>).
+  Isso é normal quando há financiamentos em aberto e vai se equilibrando conforme as parcelas são pagas.
+  Veja o detalhamento no card "Dívidas em aberto".
+</div>
+
+<div class="grid cols-2" style="margin-top:16px;">
+  <div class="card">
+    <h2>📈 Patrimônio ao longo do tempo</h2>
+    <div class="chart-wrap"><canvas id="chart-networth"></canvas></div>
+  </div>
+  <div class="card">
+    <h2>🥧 Gastos por categoria (mês atual)</h2>
+    <div class="chart-wrap"><canvas id="chart-categories"></canvas></div>
+  </div>
+</div>
+
+<div class="card" style="margin-top:16px;">
+  <h2>🕒 Últimas transações</h2>
+  <table>
+    <thead>
+      <tr><th>Data</th><th>Descrição</th><th>Categoria</th><th class="num">Valor</th></tr>
+    </thead>
+    <tbody id="recent-body"></tbody>
+  </table>
+</div>
+
+<div id="debts-wrap"></div>
+
+<div class="card" style="margin-top:16px;">
+  <h2>📅 Projeção dos próximos meses</h2>
+  <div class="note" style="margin-top:4px;">
+    Baseada nas <b>contas recorrentes</b>, nas <b>parcelas de financiamentos</b> (a partir do mês de início de cada um)
+    e na <b>fatura do cartão</b>. Defina sua renda mensal para ver o saldo projetado variar.
+  </div>
+  <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:12px;">
+    <div style="min-width:180px;">
+      <label>Renda mensal (R$)</label>
+      <input id="proj-income" type="number" step="0.01" value="0" placeholder="Ex.: 3000">
+    </div>
+    <button class="btn" onclick="saveIncome()">Aplicar renda</button>
+    <div class="muted" style="padding-bottom:9px;">Saldo inicial: <b id="proj-start" class="text-accent">R$ 0,00</b></div>
+  </div>
+  <table>
+    <thead><tr><th>Mês</th><th class="num">Recorrentes</th><th class="num">Fatura cartão</th><th class="num">Financiamentos</th><th class="num">Total fixo</th><th class="num">Saldo projetado</th></tr></thead>
+    <tbody id="proj-body"></tbody>
+  </table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const COLORS = ["#38bdf8", "#34d399", "#fbbf24", "#f87171", "#a78bfa", "#f472b6", "#2dd4bf", "#fb923c"];
+
+const KPI_META = {
+  "Patrimônio": { icon: "💰", color: "#34d399" },
+  "Ativos": { icon: "🏦", color: "#38bdf8" },
+  "Dívidas": { icon: "💳", color: "#f87171" },
+  "Gastos do mês": { icon: "📅", color: "#fbbf24" },
+};
+
+function renderKpis(s) {
+  const nw = s.networth;
+  const sp = s.spending;
+  document.getElementById("month-label").textContent = "Mês: " + monthName(s.month);
+  const items = [
+    { label: "Patrimônio", value: fmt(nw.networth), cls: nw.networth >= 0 ? "text-green" : "text-red", sub: "Ativos − Dívidas" },
+    { label: "Ativos", value: fmt(nw.assets), cls: "text-accent", sub: `Contas ${fmt(nw.accounts)} · Caixas ${fmt(nw.boxes)} · Inv. ${fmt(nw.investments)}` },
+    { label: "Dívidas", value: fmt(nw.liabilities), cls: "text-red", sub: `Cartão ${fmt(nw.cards)} · Finan. ${fmt(nw.financings)}` },
+    { label: "Gastos do mês", value: fmt(sp.expense), cls: "text-amber", sub: `Receitas ${fmt(sp.income)}` },
+  ];
+  document.getElementById("kpis").innerHTML = items.map((k) => {
+    const meta = KPI_META[k.label] || { icon: "•", color: "var(--accent)" };
+    return `<div class="card kpi">
+      <div class="kpi-top">
+        <span class="kpi-ico" style="background:${meta.color}1a;color:${meta.color};">${meta.icon}</span>
+        <span class="kpi-label">${k.label}</span>
+      </div>
+      <div class="kpi-value ${k.cls}">${k.value}</div>
+      <div class="kpi-sub">${k.sub}</div>
+    </div>`;
+  }).join("");
+
+  const note = document.getElementById("neg-note");
+  if (nw.networth < 0) {
+    document.getElementById("neg-debt").textContent = fmt(nw.liabilities);
+    document.getElementById("neg-asset").textContent = fmt(nw.assets);
+    note.style.display = "block";
+  } else {
+    note.style.display = "none";
+  }
+
+  renderDebts(s.debts);
+}
+
+function renderDebts(debts) {
+  const wrap = document.getElementById("debts-wrap");
+  if (!debts.length) {
+    wrap.innerHTML = `<div class="card" style="margin-top:16px;"><h2>💳 Dívidas em aberto</h2><div class="empty">Nenhuma dívida em aberto.</div></div>`;
+    return;
+  }
+  const total = debts.reduce((acc, d) => acc + Number(d.amount), 0);
+  wrap.innerHTML = `<div class="card" style="margin-top:16px;">
+    <h2>💳 Dívidas em aberto <span class="muted">(total ${fmt(total)})</span></h2>
+    <table>
+      <thead><tr><th>Dívida</th><th class="num">Restante</th></tr></thead>
+      <tbody>
+        ${debts.map((d) => `<tr><td>${escapeHtml(d.name)}</td><td class="num text-red"><b>${fmt(d.amount)}</b></td></tr>`).join("")}
+      </tbody>
+    </table>
+  </div>`;
+}
+
+let networthChart = null;
+let categoryChart = null;
+
+function renderNetworthChart(series) {
+  if (networthChart) { networthChart.destroy(); networthChart = null; }
+  const ctx = document.getElementById("chart-networth");
+  networthChart = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels: series.map((p) => p.date ? fmtDate(p.date) : ""),
+      datasets: [{
+        label: "Patrimônio",
+        data: series.map((p) => p.total),
+        borderColor: "#38bdf8",
+        backgroundColor: "rgba(56,189,248,.15)",
+        fill: true,
+        tension: .3,
+      }],
+    },
+    options: {
+      plugins: { legend: { labels: { color: "#e2e8f0" } } },
+      scales: {
+        x: { ticks: { color: "#94a3b8", maxTicksLimit: 8 }, grid: { color: "#334155" } },
+        y: { ticks: { color: "#94a3b8", callback: (v) => fmt(v) }, grid: { color: "#334155" } },
+      },
+    },
+  });
+}
+
+function renderCategoryChart(cats) {
+  if (categoryChart) { categoryChart.destroy(); categoryChart = null; }
+  const ctx = document.getElementById("chart-categories");
+  const entries = Object.entries(cats).sort((a, b) => b[1] - a[1]);
+  categoryChart = new Chart(ctx, {
+    type: "doughnut",
+    data: {
+      labels: entries.map(([k]) => k),
+      datasets: [{
+        data: entries.map(([, v]) => v),
+        backgroundColor: entries.map((_, i) => COLORS[i % COLORS.length]),
+      }],
+    },
+    options: {
+      plugins: { legend: { labels: { color: "#e2e8f0", boxWidth: 12 } } },
+    },
+  });
+}
+
+function renderRecent(rows) {
+  const body = document.getElementById("recent-body");
+  if (!rows.length) {
+    body.innerHTML = `<tr><td colspan="4" class="empty">Nenhuma transação ainda.</td></tr>`;
+    return;
+  }
+  body.innerHTML = rows.map((t) => {
+    const isIncome = t.type === "income";
+    return `<tr>
+      <td>${fmtDate(t.date)}</td>
+      <td>${escapeHtml(t.description)}</td>
+      <td><span class="tag">${escapeHtml(t.category || "Outros")}</span></td>
+      <td class="num ${isIncome ? "text-green" : "text-red"}">${isIncome ? "+" : "−"}${fmt(t.amount)}</td>
+    </tr>`;
+  }).join("");
+}
+
+const BANK_EMOJI = { "nubank": "🔵", "mercado": "💙", "banco do brasil": "🔴", "inter": "🟠", "caixa": "🟡", "santander": "🔴", "itau": "🟣" };
+
+function bankEmoji(name) {
+  const n = (name || "").toLowerCase();
+  for (const [k, v] of Object.entries(BANK_EMOJI)) if (n.includes(k)) return v;
+  return "🏦";
+}
+
+function bankFree(total, boxes, investments) {
+  const boxed = boxes.reduce((s, b) => s + Number(b.balance), 0);
+  const inv = investments.reduce((s, i) => s + Number(i.value), 0);
+  return total - boxed - inv;
+}
+
+function renderBanks(ov) {
+  const grid = document.getElementById("banks-grid");
+  const banks = (ov && ov.banks) || [];
+  if (!banks.length) {
+    grid.innerHTML = `<div class="card empty" style="grid-column:1/-1;">Nenhuma conta cadastrada.</div>`;
+    return;
+  }
+  const extras = [];
+  if (ov.orphan_boxes && ov.orphan_boxes.length) {
+    extras.push(ov.orphan_boxes.map((b) => `<div class="bank-row"><span>🪙 ${escapeHtml(b.name)}</span><span class="amt text-green">${fmt(b.balance)}</span></div>`).join(""));
+  }
+  if (ov.orphan_investments && ov.orphan_investments.length) {
+    extras.push(ov.orphan_investments.map((i) => `<div class="bank-row"><span>📈 ${escapeHtml(i.name)}</span><span class="amt text-accent">${fmt(i.value)}</span></div>`).join(""));
+  }
+
+  grid.innerHTML = banks.map((b) => {
+    const bankTotal = b.total;
+    const free = bankFree(b.total, b.boxes, b.investments);
+    const boxesHtml = b.boxes.length
+      ? b.boxes.map((x) => `<div class="bank-row">
+          <span>${x.is_emergency ? "🔒" : "🪙"} ${escapeHtml(x.name)}</span><span class="amt text-green">${fmt(x.balance)}</span>
+        </div>`).join("")
+      : `<div class="muted">Nenhuma caixinha.</div>`;
+    const invHtml = b.investments.length
+      ? b.investments.map((x) => `<div class="bank-row">
+          <span>📈 ${escapeHtml(x.name)} <span class="muted">(${x.quantity} cotas)</span></span><span class="amt text-accent">${fmt(x.value)}</span>
+        </div>`).join("")
+      : "";
+    return `<div class="card bank-card">
+      <div class="bank-head">
+        <div class="bank-avatar">${bankEmoji(b.name)}</div>
+        <div>
+          <div class="bank-name">${escapeHtml(b.name)}</div>
+          <div class="bank-meta">${b.type === "digital" ? "Conta digital" : "Banco"} · ${escapeHtml(b.name)}</div>
+        </div>
+        <div class="bank-total">${fmt(b.total)}</div>
+      </div>
+      <div class="bank-free"><span>Livre na conta</span><b>${fmt(free)}</b></div>
+      ${b.boxes.length ? `<div class="bank-section"><div class="bank-section-title">Caixinhas</div>${boxesHtml}</div>` : ""}
+      ${invHtml ? `<div class="bank-section"><div class="bank-section-title">Investimentos</div>${invHtml}</div>` : ""}
+      <div class="bank-footer">
+        <span class="muted">Total ${escapeHtml(b.name)}</span>
+        <span class="tot">${fmt(bankTotal)}</span>
+      </div>
+    </div>`;
+  }).join("");
+  if (extras.length) {
+    grid.innerHTML += `<div class="card">
+      <h2 style="margin:0;">🧺 Fora dos bancos</h2>
+      <div style="margin-top:8px;">${extras.join("")}</div>
+    </div>`;
+  }
+}
+
+function renderProjection(proj) {
+  const months = (proj && proj.months) || [];
+  document.getElementById("proj-income").value = proj ? proj.income : 0;
+  document.getElementById("proj-start").textContent = fmt(proj ? proj.start : 0);
+  const body = document.getElementById("proj-body");
+  if (!months.length) {
+    body.innerHTML = `<tr><td colspan="6" class="empty">Sem dados para projetar.</td></tr>`;
+    return;
+  }
+  body.innerHTML = months.map((m) => {
+    const isNeg = m.balance < 0;
+    const finDetail = (m.financing_items || []).length
+      ? `<div class="muted">${m.financing_items.map((f) => `${escapeHtml(f.name)} ${fmt(f.amount)}`).join(" · ")}</div>`
+      : "";
+    return `<tr>
+      <td><b>${monthName(m.month)}</b></td>
+      <td class="num">${fmt(m.recurring)}</td>
+      <td class="num">${fmt(m.invoice)}</td>
+      <td class="num">${fmt(m.financings)}${finDetail}</td>
+      <td class="num text-red"><b>${fmt(m.total)}</b></td>
+      <td class="num ${isNeg ? "text-red" : "text-green"}"><b>${fmt(m.balance)}</b></td>
+    </tr>`;
+  }).join("");
+}
+
+async function saveIncome() {
+  const v = Number(document.getElementById("proj-income").value) || 0;
+  await api("/api/settings/monthly_income", { method: "PUT", body: { value: v } });
+  toast("Renda mensal salva");
+  refresh();
+}
+
+async function refresh() {
+  let s;
+  try {
+    s = await api("/api/summary");
+  } catch (err) {
+    document.getElementById("kpis").innerHTML =
+      `<div class="card kpi" style="grid-column:1/-1;"><div class="text-red">Erro ao carregar os dados: ${escapeHtml(err.message)}</div></div>`;
+    return;
+  }
+  renderKpis(s);
+  renderBanks(s.banks);
+  const incomeInput = document.getElementById("proj-income");
+  if (document.activeElement !== incomeInput) {
+    renderProjection(s.projection);
+  }
+  if (typeof Chart !== "undefined") {
+    renderNetworthChart(s.series);
+    renderCategoryChart(s.spending.categories);
+  } else {
+    document.querySelectorAll(".chart-wrap").forEach((w) =>
+      (w.innerHTML = `<div class="empty">Gráficos indisponíveis (Chart.js não carregou).</div>`));
+  }
+  renderRecent(s.recent);
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  refresh();
+  setInterval(refresh, 15000);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) refresh();
+  });
+});
+</script>
+{% endblock %}
