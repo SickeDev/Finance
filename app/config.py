@@ -167,6 +167,7 @@ SCHEMA = {
             "card_id": {"type": "str", "max": 64},
             "financing_id": {"type": "str", "max": 64},
             "recurring_id": {"type": "str", "max": 64},
+            "transfer_id": {"type": "str", "max": 64},
         },
     },
     "transfers": {

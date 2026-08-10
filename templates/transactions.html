@@ -33,7 +33,7 @@
   </select>
 </div>
 
-<div class="grid cols-3" id="tx-summary" style="margin-bottom:16px;"></div>
+<div class="grid cols-4" id="tx-summary" style="margin-bottom:16px;"></div>
 
 <div class="card">
   <table>
@@ -125,10 +125,12 @@ function renderSummary() {
   const list = filtered();
   const income = list.filter((t) => t.type === "income").reduce((s, t) => s + Number(t.amount), 0);
   const expense = list.filter((t) => t.type === "expense").reduce((s, t) => s + Number(t.amount), 0);
+  const transfers = list.filter((t) => t.type === "transfer").length;
   document.getElementById("tx-summary").innerHTML = `
     <div class="card kpi"><div class="label">Lançamentos</div><div class="value text-accent">${list.length}</div></div>
     <div class="card kpi"><div class="label">Receitas</div><div class="value text-green">${fmt(income)}</div></div>
-    <div class="card kpi"><div class="label">Despesas</div><div class="value text-red">${fmt(expense)}</div></div>`;
+    <div class="card kpi"><div class="label">Despesas</div><div class="value text-red">${fmt(expense)}</div></div>
+    <div class="card kpi"><div class="label">Transferências</div><div class="value">${transfers}</div></div>`;
 }
 
 function renderTable() {
@@ -141,12 +143,16 @@ function renderTable() {
   body.innerHTML = list.map((t) => {
     const acc = state.accounts.find((a) => a.id === t.account_id);
     const isIncome = t.type === "income";
+    const isTransfer = t.type === "transfer";
+    const sign = isIncome ? "+" : isTransfer ? "" : "−";
+    const cls = isIncome ? "text-green" : isTransfer ? "" : "text-red";
+    const accLabel = isTransfer ? "—" : acc ? escapeHtml(acc.name) : escapeHtml(t.method || "—");
     return `<tr>
       <td>${fmtDate(t.date)}</td>
       <td>${escapeHtml(t.description)}</td>
       <td><span class="tag">${escapeHtml(t.category || "Outros")}</span></td>
-      <td class="muted">${acc ? escapeHtml(acc.name) : escapeHtml(t.method || "—")}</td>
-      <td class="num ${isIncome ? "text-green" : "text-red"}">${isIncome ? "+" : "−"}${fmt(t.amount)}</td>
+      <td class="muted">${accLabel}</td>
+      <td class="num ${cls}">${sign}${fmt(t.amount)}</td>
       <td class="row-actions">
         <button class="btn ghost small" onclick="editTx('${t.id}')">Editar</button>
         <button class="btn danger small" onclick="delTx('${t.id}')">Excluir</button>

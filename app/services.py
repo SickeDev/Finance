@@ -230,6 +230,25 @@ def apply_adjustment(storage, body):
         "note": str(body.get("note") or "").strip()[:300],
     }
     storage.insert("adjustments", adjustment)
+
+    # Reajuste de saldo (conta/caixinha) representa dinheiro de verdade:
+    # registra como receita (aumento) ou despesa (redução) na transação.
+    if field == "balance" and new_value != old_value:
+        diff = new_value - old_value
+        tx_account = adjustment["entity_id"] if coll == "accounts" else (doc.get("account_id") or "")
+        storage.insert(
+            "transactions",
+            {
+                "id": store.new_id(),
+                "date": adjustment["date"],
+                "description": f"Reajuste · {adjustment['entity_name']}",
+                "category": "Outros",
+                "amount": M.round2(abs(diff)),
+                "type": "income" if diff > 0 else "expense",
+                "account_id": tx_account,
+                "method": "adjustment",
+            },
+        )
     return adjustment
 
 
@@ -577,6 +596,26 @@ def create_transfer(storage, body):
         "to_units": round(to_units, 8),
     }
     storage.insert("transfers", transfer)
+
+    from_name = src.get("name") or "Origem"
+    to_name = dst.get("name") or "Destino"
+    label = transfer["description"]
+    if label == "Transferência":
+        label = f"{from_name} → {to_name}"
+    storage.insert(
+        "transactions",
+        {
+            "id": store.new_id(),
+            "date": transfer["date"],
+            "description": f"Transferência · {label}",
+            "category": "Outros",
+            "amount": transfer["amount"],
+            "type": "transfer",
+            "account_id": "",
+            "method": "transfer",
+            "transfer_id": transfer["id"],
+        },
+    )
     return transfer
 
 
@@ -608,6 +647,13 @@ def delete_transfer(storage, transfer_id):
         updates.append((to_coll, dst))
     if updates:
         storage.apply_updates(updates)
+    tx_ids = [
+        t["id"]
+        for t in storage.list("transactions")
+        if t.get("transfer_id") == transfer_id
+    ]
+    if tx_ids:
+        storage.delete_many("transactions", tx_ids)
     storage.delete("transfers", transfer_id)
 
 
@@ -655,10 +701,16 @@ def _record_payment(storage, kind, ref_id, date, amount, account_id, tx_id, desc
 
 
 def _make_expense(storage, account_id, payload):
-    """Cria a transação de despesa se a conta informada existir."""
-    if not account_id or storage.get("accounts", account_id) is None:
-        return None
+    """Cria a transação de despesa (mesmo sem conta, para registro completo).
+
+    Se a conta informada não existir, a transação é registrada sem conta,
+    garantindo que todo pagamento sempre apareça na página Transações.
+    """
     tx = {"id": store.new_id(), **payload, "date": payload["date"], "type": "expense"}
+    if account_id and storage.get("accounts", account_id) is not None:
+        tx["account_id"] = account_id
+    else:
+        tx["account_id"] = ""
     storage.insert("transactions", tx)
     return tx["id"]
 
@@ -685,7 +737,7 @@ def pay_card_purchase(storage, purchase_id, account_id="", date=None):
         account_id,
         {
             "date": when,
-            "description": f"{p.get('description', 'Compra')} ({paid_count}/{p.get('installments', 1)})",
+            "description": f"Cartão · {p.get('description', 'Compra')} ({paid_count}/{p.get('installments', 1)})",
             "amount": monthly,
             "category": p.get("category") or "Cartão de crédito",
             "account_id": account_id,
@@ -735,7 +787,7 @@ def pay_financing(storage, fin_id, account_id="", date=None):
         account_id,
         {
             "date": when,
-            "description": f"{f.get('name', 'Financiamento')} ({paid}/{f.get('installments_total', 0)})",
+            "description": f"Financiamento · {f.get('name', 'Financiamento')} ({paid}/{f.get('installments_total', 0)})",
             "amount": monthly,
             "category": f.get("category") or "Outros",
             "account_id": account_id,
@@ -782,7 +834,7 @@ def pay_recurring(storage, rec_id, account_id="", date=None):
         account_id,
         {
             "date": when,
-            "description": r.get("name", "Conta recorrente"),
+            "description": f"Recorrente · {r.get('name', 'Conta recorrente')}",
             "amount": amount,
             "category": r.get("category") or "Outros",
             "account_id": account_id,

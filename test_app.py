@@ -209,7 +209,68 @@ class FinanceAppTest(unittest.TestCase):
         res = self.client.post(f"/api/recurring/{rec['id']}/pay", json={})
         self.assertEqual(res.status_code, 200)
         txs = self.client.get("/api/transactions").get_json()
-        self.assertTrue(any(t["description"] == "Netflix" and t["amount"] == 55.9 for t in txs))
+        self.assertTrue(any(t["description"] == "Recorrente · Netflix" and t["amount"] == 55.9 for t in txs))
+
+    def test_recurring_pay_without_account_still_creates_transaction(self):
+        rec = self._post("/api/recurring", {"name": "Apartamento", "amount": 510, "category": "Moradia"})
+        res = self.client.post(f"/api/recurring/{rec['id']}/pay", json={})
+        self.assertEqual(res.status_code, 200)
+        txs = self.client.get("/api/transactions").get_json()
+        self.assertEqual(len(txs), 1)
+        self.assertEqual(txs[0]["description"], "Recorrente · Apartamento")
+        self.assertEqual(txs[0]["account_id"], "")
+
+    def test_transfer_creates_and_reverts_transaction(self):
+        acc = self._post("/api/accounts", {"name": "Nubank", "balance": 1000})
+        box = self._post("/api/boxes", {"name": "Reserva", "balance": 0})
+        res = self.client.post("/api/transfers", json={
+            "from_type": "account", "from_id": acc["id"],
+            "to_type": "box", "to_id": box["id"],
+            "amount": 300, "date": "2026-08-05",
+        })
+        self.assertEqual(res.status_code, 201, res.get_json())
+        t = res.get_json()
+
+        txs = self.client.get("/api/transactions").get_json()
+        self.assertEqual(len(txs), 1)
+        tx = txs[0]
+        self.assertEqual(tx["type"], "transfer")
+        self.assertEqual(tx["amount"], 300)
+        self.assertEqual(tx["description"], "Transferência · Nubank → Reserva")
+        self.assertEqual(tx["transfer_id"], t["id"])
+
+        res = self.client.delete(f"/api/transfers/{t['id']}")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(self.client.get("/api/transactions").get_json()), 0)
+
+    def test_balance_adjustment_creates_income_transaction(self):
+        acc = self._post("/api/accounts", {"name": "Conta teste", "balance": 100})
+        res = self.client.post("/api/adjustments", json={
+            "entity_type": "accounts",
+            "entity_id": acc["id"],
+            "field": "balance",
+            "new_value": 150,
+            "note": "rendimento",
+        })
+        self.assertEqual(res.status_code, 201)
+        txs = self.client.get("/api/transactions").get_json()
+        self.assertEqual(len(txs), 1)
+        self.assertEqual(txs[0]["type"], "income")
+        self.assertEqual(txs[0]["amount"], 50)
+        self.assertEqual(txs[0]["description"], "Reajuste · Conta teste")
+
+    def test_non_balance_adjustment_does_not_create_transaction(self):
+        acc = self._post("/api/accounts", {"name": "Conta", "balance": 100})
+        self._post("/api/investments", {"name": "FII", "quantity": 10, "current_price": 10})
+        inv = self.client.get("/api/investments").get_json()[0]
+        res = self.client.post("/api/adjustments", json={
+            "entity_type": "investments",
+            "entity_id": inv["id"],
+            "field": "current_price",
+            "new_value": 12,
+        })
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(len(self.client.get("/api/transactions").get_json()), 0)
 
     def _get(self, collection, doc_id):
         rows = self.client.get(f"/api/{collection}").get_json()
