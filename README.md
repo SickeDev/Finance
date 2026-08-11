@@ -14,6 +14,9 @@ Aplicativo web local (roda no seu navegador) para controle financeiro completo.
 - 🏍️ Financiamentos e parcelas com controle de progresso
 - 📅 Contas recorrentes
 - 💸 Transações com categorias e filtros por mês
+- 🏷️ Ao lançar uma transação, escolha a **origem/destino** (conta ou caixinha)
+  — receita entra e despesa sai de lá, movendo o saldo de verdade
+- 🔄 Transferências entre contas, caixinhas e investimentos
 - 📄 Importação e exportação em XML
 - ☁️ Sincronização com Firebase Firestore (ou arquivo local)
 

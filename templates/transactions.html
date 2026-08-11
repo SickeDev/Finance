@@ -37,7 +37,7 @@
 
 <div class="card">
   <table>
-    <thead><tr><th>Data</th><th>Descrição</th><th>Cat.</th><th>Conta</th><th class="num">Valor</th><th></th></tr></thead>
+    <thead><tr><th>Data</th><th>Descrição</th><th>Cat.</th><th>Local</th><th class="num">Valor</th><th></th></tr></thead>
     <tbody id="tx-body"></tbody>
   </table>
 </div>
@@ -75,8 +75,9 @@
       </div>
       <div class="form-grid">
         <div>
-          <label>Conta</label>
-          <select id="f-account"><option value="">(sem conta)</option></select>
+          <label>Origem/Destino (conta ou caixinha)</label>
+          <select id="f-entity"><option value="">(nenhum — só registrar)</option></select>
+          <span class="muted" style="font-size:12px;">Receita: entra nela · Despesa: sai dela</span>
         </div>
         <div>
           <label>Método</label>
@@ -94,22 +95,34 @@
 
 {% block scripts %}
 <script>
-let state = { accounts: [], categories: [], all: [], month: currentMonth(), type: "" };
+let state = { accounts: [], boxes: [], categories: [], all: [], month: currentMonth(), type: "" };
 
 async function load() {
-  const [txs, accounts, meta] = await Promise.all([
-    api("/api/transactions"), api("/api/accounts"), api("/api/meta"),
+  const [txs, accounts, boxes, meta] = await Promise.all([
+    api("/api/transactions"), api("/api/accounts"), api("/api/boxes"), api("/api/meta"),
   ]);
-  state = { ...state, accounts, categories: meta.categories, all: txs };
+  state = { ...state, accounts, boxes, categories: meta.categories, all: txs };
 
   const catSelect = document.getElementById("f-category");
   catSelect.innerHTML = meta.categories.map((c) => `<option>${c}</option>`).join("");
-  const accSelect = document.getElementById("f-account");
-  accSelect.innerHTML = `<option value="">(sem conta)</option>` +
-    accounts.map((a) => `<option value="${a.id}">${escapeHtml(a.name)}</option>`).join("");
-
+  renderEntitySelect();
   renderSummary();
   renderTable();
+}
+
+function renderEntitySelect() {
+  const sel = document.getElementById("f-entity");
+  const current = sel.value;
+  const accountsOpts = state.accounts
+    .map((a) => `<option value="account:${a.id}">🏦 ${escapeHtml(a.name)} (${fmt(a.balance || 0)})</option>`)
+    .join("");
+  const boxesOpts = state.boxes
+    .map((b) => `<option value="box:${b.id}">🪙 ${escapeHtml(b.name)} (${fmt(b.balance || 0)})</option>`)
+    .join("");
+  sel.innerHTML = `<option value="">(nenhum — só registrar)</option>` +
+    `<optgroup label="Contas">${accountsOpts}</optgroup>` +
+    `<optgroup label="Caixinhas">${boxesOpts}</optgroup>`;
+  if (current) sel.value = current;
 }
 
 function filtered() {
@@ -141,12 +154,11 @@ function renderTable() {
     return;
   }
   body.innerHTML = list.map((t) => {
-    const acc = state.accounts.find((a) => a.id === t.account_id);
     const isIncome = t.type === "income";
     const isTransfer = t.type === "transfer";
     const sign = isIncome ? "+" : isTransfer ? "" : "−";
     const cls = isIncome ? "text-green" : isTransfer ? "" : "text-red";
-    const accLabel = isTransfer ? "—" : acc ? escapeHtml(acc.name) : escapeHtml(t.method || "—");
+    const accLabel = isTransfer ? "—" : entityLabel(t);
     return `<tr>
       <td>${fmtDate(t.date)}</td>
       <td>${escapeHtml(t.description)}</td>
@@ -161,6 +173,21 @@ function renderTable() {
   }).join("");
 }
 
+function entityLabel(t) {
+  if (t.entity_type && t.entity_id) {
+    const isBox = t.entity_type === "box";
+    const list = isBox ? state.boxes : state.accounts;
+    const ent = list.find((x) => x.id === t.entity_id);
+    if (!ent) return "—";
+    return `${isBox ? "🪙 " : "🏦 "}${escapeHtml(ent.name)}`;
+  }
+  if (t.account_id) {
+    const acc = state.accounts.find((a) => a.id === t.account_id);
+    return acc ? `🏦 ${escapeHtml(acc.name)}` : escapeHtml(t.method || "—");
+  }
+  return escapeHtml(t.method || "—");
+}
+
 function openTransaction() {
   document.getElementById("tx-modal-title").textContent = "Nova transação";
   document.getElementById("f-id").value = "";
@@ -169,7 +196,8 @@ function openTransaction() {
   document.getElementById("f-type").value = "expense";
   document.getElementById("f-amount").value = "";
   document.getElementById("f-category").value = "Outros";
-  document.getElementById("f-account").value = "";
+  renderEntitySelect();
+  document.getElementById("f-entity").value = "";
   document.getElementById("f-method").value = "Conta";
   openModal("tx-modal");
 }
@@ -183,7 +211,11 @@ function editTx(id) {
   document.getElementById("f-type").value = t.type === "income" ? "income" : "expense";
   document.getElementById("f-amount").value = t.amount ?? 0;
   document.getElementById("f-category").value = t.category || "Outros";
-  document.getElementById("f-account").value = t.account_id || "";
+  renderEntitySelect();
+  const entity = (t.entity_type && t.entity_id)
+    ? `${t.entity_type}:${t.entity_id}`
+    : (t.account_id ? `account:${t.account_id}` : "");
+  document.getElementById("f-entity").value = entity;
   document.getElementById("f-method").value = t.method || "Conta";
   openModal("tx-modal");
 }
@@ -202,13 +234,23 @@ async function delTx(id) {
 document.getElementById("tx-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const id = document.getElementById("f-id").value;
+  const ev = document.getElementById("f-entity").value;
+  let entity_type = "", entity_id = "", account_id = "";
+  if (ev) {
+    const [et, eid] = ev.split(":");
+    entity_type = et;
+    entity_id = eid;
+    if (et === "account") account_id = eid;
+  }
   const payload = {
     date: document.getElementById("f-date").value || todayISO(),
     description: document.getElementById("f-description").value,
     type: document.getElementById("f-type").value,
     amount: Number(document.getElementById("f-amount").value) || 0,
     category: document.getElementById("f-category").value,
-    account_id: document.getElementById("f-account").value,
+    entity_type,
+    entity_id,
+    account_id,
     method: document.getElementById("f-method").value,
   };
   if (id) await api(`/api/transactions/${id}`, { method: "PUT", body: payload });

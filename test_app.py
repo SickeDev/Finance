@@ -276,6 +276,80 @@ class FinanceAppTest(unittest.TestCase):
         rows = self.client.get(f"/api/{collection}").get_json()
         return next(r for r in rows if r["id"] == doc_id)
 
+    def test_transaction_expense_debits_entity_account(self):
+        acc = self._post("/api/accounts", {"name": "Nubank", "balance": 1000})
+        res = self.client.post("/api/transactions", json={
+            "date": "2026-08-10", "description": "Mercado", "amount": 150,
+            "type": "expense", "category": "Alimentação",
+            "entity_type": "account", "entity_id": acc["id"],
+        })
+        self.assertEqual(res.status_code, 201, res.get_json())
+        tx = res.get_json()
+        self.assertEqual(tx["entity_type"], "account")
+        self.assertEqual(tx["account_id"], acc["id"])
+        self.assertEqual(self._get("accounts", acc["id"])["balance"], 850)
+
+    def test_transaction_income_credits_box(self):
+        box = self._post("/api/boxes", {"name": "Reserva", "balance": 0})
+        res = self.client.post("/api/transactions", json={
+            "date": "2026-08-10", "description": "Bônus", "amount": 500,
+            "type": "income", "category": "Salário",
+            "entity_type": "box", "entity_id": box["id"],
+        })
+        self.assertEqual(res.status_code, 201, res.get_json())
+        tx = res.get_json()
+        self.assertEqual(tx["entity_type"], "box")
+        self.assertEqual(self._get("boxes", box["id"])["balance"], 500)
+
+    def test_transaction_expense_insufficient_funds_blocked(self):
+        acc = self._post("/api/accounts", {"name": "Nubank", "balance": 100})
+        res = self.client.post("/api/transactions", json={
+            "date": "2026-08-10", "description": "Carro", "amount": 300,
+            "type": "expense", "category": "Outros",
+            "entity_type": "account", "entity_id": acc["id"],
+        })
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("saldo insuficiente", res.get_json()["error"])
+        self.assertEqual(self._get("accounts", acc["id"])["balance"], 100)
+
+    def test_transaction_edit_updates_balances(self):
+        acc = self._post("/api/accounts", {"name": "Nubank", "balance": 1000})
+        box = self._post("/api/boxes", {"name": "Reserva", "balance": 300})
+        tx = self._post("/api/transactions", {
+            "date": "2026-08-10", "description": "Compras", "amount": 100,
+            "type": "expense", "category": "Outros",
+            "entity_type": "account", "entity_id": acc["id"],
+        })
+        self.assertEqual(self._get("accounts", acc["id"])["balance"], 900)
+
+        # muda para caixinha e outro valor: reverte a conta e debita a caixinha
+        res = self.client.put(f"/api/transactions/{tx['id']}", json={
+            "amount": 250, "entity_type": "box", "entity_id": box["id"],
+        })
+        self.assertEqual(res.status_code, 200, res.get_json())
+        self.assertEqual(self._get("accounts", acc["id"])["balance"], 1000)
+        self.assertEqual(self._get("boxes", box["id"])["balance"], 50)
+
+    def test_transaction_delete_reverses_balance(self):
+        box = self._post("/api/boxes", {"name": "Reserva", "balance": 100})
+        tx = self._post("/api/transactions", {
+            "date": "2026-08-10", "description": "Presente", "amount": 40,
+            "type": "expense", "category": "Lazer",
+            "entity_type": "box", "entity_id": box["id"],
+        })
+        self.assertEqual(self._get("boxes", box["id"])["balance"], 60)
+        res = self.client.delete(f"/api/transactions/{tx['id']}")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(self._get("boxes", box["id"])["balance"], 100)
+        self.assertEqual(len(self.client.get("/api/transactions").get_json()), 0)
+
+    def test_transaction_entity_rejects_unknown_type(self):
+        res = self.client.post("/api/transactions", json={
+            "date": "2026-08-10", "description": "X", "amount": 10,
+            "type": "expense", "entity_type": "investment", "entity_id": "abc",
+        })
+        self.assertEqual(res.status_code, 400)
+
     def test_transfers_update_balances_and_revert(self):
         acc = self._post("/api/accounts", {"name": "Nubank", "balance": 1000})
         box = self._post("/api/boxes", {"name": "Reserva", "balance": 200})

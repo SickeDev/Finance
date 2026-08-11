@@ -37,7 +37,6 @@ CRUD_COLLECTIONS = [
     "investments",
     "financings",
     "recurring",
-    "transactions",
 ]
 
 
@@ -136,6 +135,43 @@ def init_app(app):
 
     for col in CRUD_COLLECTIONS:
         make_crud(col)
+
+    # ------------------------------------------------------------- transações
+    # Transações manuais têm origem/destino (conta ou caixinha) e movem o
+    # saldo de verdade, então usam endpoints próprios (não o CRUD genérico).
+
+    @app.get("/api/transactions")
+    def api_list_transactions():
+        return jsonify(store.get_storage().list("transactions"))
+
+    @app.post("/api/transactions")
+    def api_create_transaction():
+        try:
+            doc = services.create_transaction(store.get_storage(), _body())
+        except ValueError as exc:
+            return _err(str(exc), 400)
+        return jsonify(doc), 201
+
+    @app.put("/api/transactions/<doc_id>")
+    def api_update_transaction(doc_id):
+        try:
+            doc = services.update_transaction(store.get_storage(), doc_id, _body())
+        except ValueError as exc:
+            if str(exc) == "não encontrado":
+                return _err(str(exc), 404)
+            return _err(str(exc), 400)
+        return jsonify(doc)
+
+    @app.delete("/api/transactions/<doc_id>")
+    def api_delete_transaction(doc_id):
+        force = request.args.get("force") in ("1", "true", "True")
+        try:
+            services.delete_doc(store.get_storage(), "transactions", doc_id, force=force)
+        except services.ReferenceBlocked as exc:
+            return _err(str(exc), 409)
+        except ValueError as exc:
+            return _err(str(exc), 404)
+        return jsonify({"ok": True})
 
     # ------------------------------------------------------------- configurações
 

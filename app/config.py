@@ -163,6 +163,8 @@ SCHEMA = {
             "amount": {"type": "money"},
             "type": {"type": "enum", "values": ("income", "expense", "transfer")},
             "account_id": {"type": "str", "max": 64},
+            "entity_type": {"type": "enum", "values": ("", "account", "box")},
+            "entity_id": {"type": "str", "max": 64},
             "method": {"type": "str", "max": 40},
             "card_id": {"type": "str", "max": 64},
             "financing_id": {"type": "str", "max": 64},

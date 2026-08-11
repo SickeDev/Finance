@@ -658,6 +658,133 @@ def delete_transfer(storage, transfer_id):
 
 
 # ---------------------------------------------------------------------------
+# transações manuais (origem/destino movendo saldo de verdade)
+# ---------------------------------------------------------------------------
+# Uma transação manual pode apontar para uma conta ou caixinha ("entity").
+# Receita credita e despesa debita o saldo da entidade escolhida. Editar e
+# excluir reverte o efeito anterior antes de aplicar o novo.
+
+
+def _tx_movement(tx):
+    """Retorna (coleção, id, delta) do efeito da transação, ou None."""
+    etype = tx.get("entity_type") or ""
+    eid = tx.get("entity_id") or ""
+    coll = config.ENTITY_TYPES.get(etype)
+    if coll not in ("accounts", "boxes") or not eid:
+        return None
+    amount = float(tx.get("amount") or 0)
+    delta = amount if tx.get("type") == "income" else -amount
+    return (coll, eid, delta)
+
+
+def _check_sufficient(ent, delta):
+    if delta >= 0:
+        return
+    current = float(ent.get("balance") or 0)
+    if current < -delta - 0.005:
+        name = ent.get("name") or "entidade"
+        raise ValueError(f"saldo insuficiente em {name} ({current:.2f})")
+
+
+def _apply_tx_movement(storage, tx):
+    """Aplica (ou aplica de novo) o efeito de saldo da transação."""
+    movement = _tx_movement(tx)
+    if movement is None:
+        return
+    coll, eid, delta = movement
+    ent = storage.get(coll, eid)
+    if ent is None:
+        return
+    _check_sufficient(ent, delta)
+    ent["balance"] = M.round2(float(ent.get("balance") or 0) + delta)
+    storage.update(coll, eid, ent)
+
+
+def _reverse_tx_movement(storage, tx):
+    """Desfaz o efeito de saldo de uma transação já registrada."""
+    movement = _tx_movement(tx)
+    if movement is None:
+        return
+    coll, eid, delta = movement
+    ent = storage.get(coll, eid)
+    if ent is None:
+        return
+    ent["balance"] = M.round2(float(ent.get("balance") or 0) - delta)
+    storage.update(coll, eid, ent)
+
+
+def create_transaction(storage, body):
+    """Cria uma transação manual, movendo o saldo da conta/caixinha escolhida."""
+    doc = validate_doc("transactions", body)
+    if doc.get("amount", 0) <= 0:
+        raise ValueError("valor deve ser maior que zero")
+    doc.setdefault("entity_type", "")
+    doc.setdefault("entity_id", "")
+    doc.setdefault("account_id", "")
+
+    etype = doc.get("entity_type") or ""
+    eid = doc.get("entity_id") or ""
+    if eid:
+        coll = config.ENTITY_TYPES.get(etype)
+        if coll not in ("accounts", "boxes"):
+            raise ValueError("entidade inválida: escolha uma conta ou caixinha")
+        if storage.get(coll, eid) is None:
+            raise ValueError("entidade não encontrada")
+        if etype == "account":
+            doc["account_id"] = eid
+        if doc.get("type") != "transfer":
+            _apply_tx_movement(storage, doc)
+
+    doc["id"] = store.new_id()
+    storage.insert("transactions", doc)
+    return doc
+
+
+def update_transaction(storage, tx_id, body):
+    """Atualiza uma transação manual, revertendo o efeito antigo de saldo."""
+    existing = storage.get("transactions", tx_id)
+    if existing is None:
+        raise ValueError("não encontrado")
+    patch = validate_doc("transactions", body, partial=True)
+    new = {**existing, **patch, "id": tx_id}
+
+    old_movement = _tx_movement(existing)
+    new_movement = _tx_movement(new)
+
+    # Carrega cada entidade uma única vez (no Firestore cada get cria um dict
+    # novo, então reutilizamos o mesmo objeto quando origem e destino batem).
+    entities = {}
+
+    def fetch(coll, eid):
+        if (coll, eid) not in entities:
+            entities[(coll, eid)] = storage.get(coll, eid)
+        return entities[(coll, eid)]
+
+    # Reverte o efeito antigo em memória antes de validar o novo.
+    if old_movement:
+        coll, eid, delta = old_movement
+        ent = fetch(coll, eid)
+        if ent is not None:
+            ent["balance"] = M.round2(float(ent.get("balance") or 0) - delta)
+
+    if new_movement:
+        coll, eid, delta = new_movement
+        ent = fetch(coll, eid)
+        if ent is None:
+            raise ValueError("entidade não encontrada")
+        _check_sufficient(ent, delta)
+        ent["balance"] = M.round2(float(ent.get("balance") or 0) + delta)
+
+    if entities:
+        storage.apply_updates([(c, e) for (c, _eid), e in entities.items()])
+
+    if new.get("entity_type") == "account" and new.get("entity_id"):
+        new["account_id"] = new["entity_id"]
+    storage.update("transactions", tx_id, new)
+    return new
+
+
+# ---------------------------------------------------------------------------
 # pagamentos (recorrentes, financiamentos, parcelas de cartão)
 # ---------------------------------------------------------------------------
 # Cada pagamento gera um registro em "payments" (trilha de auditoria). Se um
@@ -1026,7 +1153,8 @@ def _detach(storage, collection, doc_id):
 
 def delete_doc(storage, collection, doc_id, force=False):
     """Exclui um documento, bloqueando se houver referências (a menos de force)."""
-    if storage.get(collection, doc_id) is None:
+    doc = storage.get(collection, doc_id)
+    if doc is None:
         raise ValueError("não encontrado")
     refs = references(storage, collection, doc_id)
     if refs and not force:
@@ -1037,5 +1165,7 @@ def delete_doc(storage, collection, doc_id, force=False):
         )
     if force:
         _detach(storage, collection, doc_id)
+    if collection == "transactions":
+        _reverse_tx_movement(storage, doc)
     storage.delete(collection, doc_id)
     return True
