@@ -359,6 +359,13 @@ def init_app(app):
 
     @app.post("/api/ai/extract-statement")
     def api_ai_extract_statement():
+        return _ai_extract(ai.extract_statement)
+
+    @app.post("/api/ai/extract-receipt")
+    def api_ai_extract_receipt():
+        return _ai_extract(ai.extract_receipt)
+
+    def _ai_extract(extractor):
         file = request.files.get("image") or request.files.get("file")
         if file is None:
             return _err("imagem não enviada", 400)
@@ -372,7 +379,7 @@ def init_app(app):
                 400,
             )
         try:
-            items = ai.extract_statement(data, filename=file.filename or "")
+            items = extractor(data, filename=file.filename or "")
         except ai.AIError as exc:
             return _err(str(exc), 502)
         return jsonify({"ok": True, "items": items})

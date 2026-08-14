@@ -825,6 +825,41 @@ class AIExtractTest(unittest.TestCase):
         self.assertEqual(res.status_code, 200, res.get_json())
         self.assertEqual(res.get_json()["created"], 2)
 
+    def test_extract_receipt_uses_receipt_flow(self):
+        from app.ai import RECEIPT_PROMPT
+
+        sent = {}
+
+        def fake_post(url, json=None, timeout=None):
+            sent["url"] = url
+            sent["prompt"] = json["contents"][0]["parts"][0]["text"]
+            return mock.Mock(
+                status_code=200,
+                text="",
+                json=lambda: {
+                    "candidates": [
+                        {"content": {"parts": [{"text": (
+                            '{"items": [{"date": "2026-08-14", "description": "PIX para João", '
+                            '"amount": 45.00, "type": "expense", "category": "alimentação", '
+                            '"method": "pix"}]}'
+                        )}]}}
+                    ]
+                },
+            )
+
+        with mock.patch("requests.post", side_effect=fake_post):
+            res = self.client.post(
+                "/api/ai/extract-receipt",
+                data={"image": (io.BytesIO(b"comprovante"), "comprovante.png")},
+                content_type="multipart/form-data",
+            )
+        self.assertEqual(res.status_code, 200, res.get_json())
+        items = res.get_json()["items"]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["amount"], 45.0)
+        self.assertEqual(items[0]["method"], "pix")
+        self.assertEqual(sent["prompt"], RECEIPT_PROMPT)
+
     def test_extract_without_key_returns_400(self):
         os.remove(self.keyfile)
         res = self.client.post(

@@ -44,6 +44,33 @@ Regras:
 - Se não houver movimentações legíveis, retorne {"items": []}.
 """
 
+RECEIPT_PROMPT = """Analise esta imagem de um COMPROVANTE de transação brasileiro
+(ex.: comprovante de Pix, transferência, pagamento ou recebimento).
+Extraia os dados principais e retorne SOMENTE um JSON válido, sem texto antes ou
+depois, neste formato:
+
+{"items": [
+  {"date": "YYYY-MM-DD", "description": "descrição curta", "amount": 123.45,
+   "type": "expense", "category": "outros", "method": "pix"},
+  ...
+]}
+
+Regras:
+- Retorne no máximo 1 item (a operação principal do comprovante). Se houver mais
+  de uma operação no mesmo comprovante, retorne uma por operação.
+- date: formato ISO. Se o ano não aparecer, use o ano atual.
+- amount: sempre positivo.
+- type: "expense" para pagamento/transferência/compra realizados, "income" para
+  recebimento ou estorno a favor.
+- method: pix, cartão, ted, boleto, dinheiro, outro (omita se incerto).
+- description: resumo curto com o nome do pagador/recebedor quando legível
+  (ex.: "PIX para João da Silva", "PIX de Maria").
+- category: uma destas: moradia, alimentação, transporte, lazer, saúde, educação,
+  cartão de crédito, investimentos, salário, freela, outros.
+- NÃO inclua IDs de transação, códigos, saldo nem informações de conta/agência.
+- Se não houver dados legíveis, retorne {"items": []}.
+"""
+
 
 class AIError(Exception):
     """Falha ao consultar a IA."""
@@ -164,7 +191,21 @@ def _normalize_items(payload):
 
 
 def extract_statement(image_bytes, filename=""):
-    """Envia a imagem ao Gemini e devolve a lista de transações normalizadas."""
+    """Envia a imagem do extrato ao Gemini e devolve as transações normalizadas."""
+    text = _call_gemini(image_bytes, filename, PROMPT)
+    payload = _extract_json(text)
+    return _normalize_items(payload)
+
+
+def extract_receipt(image_bytes, filename=""):
+    """Envia a imagem do comprovante ao Gemini e devolve a transação normalizada."""
+    text = _call_gemini(image_bytes, filename, RECEIPT_PROMPT)
+    payload = _extract_json(text)
+    return _normalize_items(payload)
+
+
+def _call_gemini(image_bytes, filename="", prompt=PROMPT):
+    """Envia a imagem ao Gemini com o prompt dado e devolve o texto da resposta."""
     key = _read_key()
     if not key:
         raise AIError("chave da IA não configurada")
@@ -182,28 +223,12 @@ def extract_statement(image_bytes, filename=""):
     elif lower.endswith((".pdf",)):
         mime = "application/pdf"
 
-    if mime == "application/pdf":
-        data_b64 = base64.b64encode(image_bytes).decode()
-        parts = [
-            {"text": PROMPT},
-            {
-                "inline_data": {
-                    "mime_type": "application/pdf",
-                    "data": data_b64,
-                }
-            },
-        ]
-    else:
-        data_b64 = base64.b64encode(image_bytes).decode()
-        parts = [
-            {"text": PROMPT},
-            {"inline_data": {"mime_type": mime, "data": data_b64}},
-        ]
+    data_b64 = base64.b64encode(image_bytes).decode()
+    parts = [
+        {"text": prompt},
+        {"inline_data": {"mime_type": mime, "data": data_b64}},
+    ]
 
-    url = (
-        f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{config.GEMINI_MODEL}:generateContent?key={key}"
-    )
     body = {"contents": [{"parts": parts}]}
     models = [config.GEMINI_MODEL] + list(config.GEMINI_MODEL_FALLBACKS)
     last_err = None
@@ -242,9 +267,7 @@ def extract_statement(image_bytes, filename=""):
     candidates = data.get("candidates") or []
     if not candidates:
         raise AIError("a IA não retornou candidatos (revise a imagem e tente de novo)")
-    text = "".join(
+    return "".join(
         part.get("text", "")
         for part in (candidates[0].get("content") or {}).get("parts", [])
     )
-    payload = _extract_json(text)
-    return _normalize_items(payload)

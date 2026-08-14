@@ -7,16 +7,20 @@
 </div>
 
 <div class="card" style="margin-bottom:16px;">
-  <h2>📷 Ler extrato com IA (print)</h2>
+  <h2>🤖 Ler com IA (print / comprovante)</h2>
   <p class="muted" style="margin-bottom:12px;">
-    Envie um <b>print/screenshot do extrato bancário</b> (PNG/JPG/PDF). A IA lê as
-    movimentações, mostra uma <b>nota com o que foi detectado</b> e você confirma
-    para lançar como transações na conta escolhida.
+    Envie um <b>print do extrato bancário</b> ou um <b>comprovante</b> (Pix/recibo,
+    PNG/JPG/PDF). A IA lê as movimentações, mostra uma <b>nota com o que foi detectado</b>
+    e você confirma para lançar como transações na conta escolhida.
   </p>
   <div class="toolbar" style="margin-bottom:8px;">
+    <select id="ai-mode">
+      <option value="statement">📷 Extrato bancário</option>
+      <option value="receipt">🧾 Comprovante (Pix/recibo)</option>
+    </select>
     <input type="file" id="ai-file" accept="image/*,.pdf,.png,.jpg,.jpeg,.webp">
     <select id="ai-account"><option value="">(sem conta)</option></select>
-    <button class="btn" onclick="aiExtract()" id="btn-ai">📷 Ler extrato</button>
+    <button class="btn" onclick="aiExtract()" id="btn-ai">📷 Ler</button>
     <span class="muted" id="ai-status"></span>
   </div>
   <div id="ai-result"></div>
@@ -357,18 +361,20 @@ async function loadAI() {
 
 async function aiExtract() {
   const file = document.getElementById("ai-file").files[0];
+  const mode = document.getElementById("ai-mode").value;
   const box = document.getElementById("ai-result");
-  if (!file) return toast("Escolha um print do extrato", true);
+  if (!file) return toast("Escolha um print ou comprovante", true);
   const btn = document.getElementById("btn-ai");
   btn.disabled = true;
-  btn.textContent = "Lendo extrato…";
+  btn.textContent = "Lendo…";
   box.innerHTML = `<div class="muted">Processando imagem com a IA…</div>`;
   const fd = new FormData();
   fd.append("image", file);
+  const url = mode === "receipt" ? "/api/ai/extract-receipt" : "/api/ai/extract-statement";
   try {
-    const res = await fetch("/api/ai/extract-statement", { method: "POST", body: fd });
+    const res = await fetch(url, { method: "POST", body: fd });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "Erro ao ler extrato");
+    if (!res.ok) throw new Error(data.error || "Erro ao ler imagem");
     aiItems = data.items || [];
     renderAI();
   } catch (err) {
@@ -376,7 +382,7 @@ async function aiExtract() {
     toast(err.message, true);
   } finally {
     btn.disabled = false;
-    btn.textContent = "📷 Ler extrato";
+    btn.textContent = "📷 Ler";
   }
 }
 

@@ -13,13 +13,13 @@ LOCAL_DB_PATH = os.path.join(DATA_DIR, "local_db.json")
 
 EXPORT_DIR = os.path.join(BASE_DIR, "exports")
 
-# Chave da API do Google Gemini (IA de leitura de extrato). Pode ser informada
-# pela variável de ambiente GEMINI_API_KEY ou no arquivo credentials/gemini_key.txt.
+# Chave da API do Google Gemini (IA de leitura de extrato e comprovante). Pode ser
+# informada pela variável de ambiente GEMINI_API_KEY ou no arquivo credentials/gemini_key.txt.
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
 GEMINI_MODEL_FALLBACKS = os.environ.get(
     "GEMINI_MODEL_FALLBACKS",
-    "gemini-flash-latest,gemini-flash-lite-latest,gemini-2.5-flash",
+    "gemini-flash-lite-latest,gemini-3.6-flash",
 ).split(",")
 GEMINI_KEY_FILE = os.path.join(BASE_DIR, "credentials", "gemini_key.txt")
 
