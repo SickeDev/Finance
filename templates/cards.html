@@ -6,8 +6,9 @@
   <button class="btn" onclick="openModal('card-modal')">+ Novo cartão</button>
 </div>
 <div class="note">
-  Cada compra parcelada gera <b>N parcelas</b> de valor igual. A fatura mostra as parcelas com vencimento no mês atual.
-  Use <b>Pagar fatura</b> para registrar o pagamento (lança a despesa na conta escolhida).
+  Cada compra gera <b>N parcelas</b> de valor igual na fatura. Ao lançar a compra, ela já vira
+  <b>1 transação com o valor total</b> na página Transações (as parcelas seguem mês a mês aqui).
+  Use <b>Pagar fatura</b> para marcar as parcelas do mês como pagas.
 </div>
 <div class="grid cols-3" id="card-summary"></div>
 <div id="cards-container" style="margin-top:16px;"></div>
@@ -223,7 +224,7 @@ async function payInvoice(cardId, selId) {
       await api(`/api/card_purchases/${p.id}/pay`, { method: "POST", body: { account_id: accountId } });
       paid += 1;
     }
-    toast(`Fatura paga: ${paid} parcela(s) lançada(s)`);
+    toast(`Fatura paga: ${paid} parcela(s) marcada(s)`);
   } catch (err) {
     toast(err.message, true);
   }

@@ -5,7 +5,10 @@ Aplicativo web local (roda no seu navegador) para controle financeiro completo.
 ## Recursos
 
 - 📊 Dashboard com patrimônio total (ativos − dívidas) e gráficos
-- 💳 Cartões de crédito com compras parceladas e fatura mensal
+- 💳 Cartões de crédito com compras parceladas e fatura mensal.
+  Ao lançar uma compra no cartão ela vira **1 transação com o valor total**
+  na página Transações; as parcelas seguem mês a mês na fatura, e
+  **Pagar fatura** apenas marca as parcelas como pagas (sem duplicar o gasto)
 - 🏦 Contas (Nubank, Mercado Pago etc.)
 - 🪙 Caixinhas e reserva de emergência
 - 📈 Investimentos (ações, FIIs, cripto, renda fixa)

@@ -842,6 +842,63 @@ def _make_expense(storage, account_id, payload):
     return tx["id"]
 
 
+def _purchase_tx(p):
+    """Transação da compra no cartão: 1 lançamento com o valor TOTAL.
+
+    A compra vira imediatamente uma despesa em Transações (no dia da compra).
+    As parcelas continuam controlando a fatura mês a mês; pagar a fatura não
+    cria despesa de novo (evita contar o gasto duas vezes).
+    """
+    return {
+        "id": store.new_id(),
+        "date": p.get("date") or today().isoformat(),
+        "description": f"Cartão · {p.get('description', 'Compra')}",
+        "category": p.get("category") or "Cartão de crédito",
+        "amount": M.round2(float(p.get("amount", 0))),
+        "type": "expense",
+        "account_id": "",
+        "method": "card",
+        "card_id": p["id"],
+    }
+
+
+def _sync_purchase_tx(storage, p):
+    """Mantém a transação da compra em dia ao editar a compra."""
+    for t in storage.list("transactions"):
+        if t.get("card_id") == p["id"] and t.get("method") == "card":
+            t["date"] = p.get("date") or t["date"]
+            t["description"] = f"Cartão · {p.get('description', 'Compra')}"
+            t["category"] = p.get("category") or "Cartão de crédito"
+            t["amount"] = M.round2(float(p.get("amount", 0)))
+            storage.update("transactions", t["id"], t)
+            return
+
+
+def create_card_purchase(storage, body):
+    """Cria a compra no cartão e já lança a transação (valor total)."""
+    doc = validate_doc("card_purchases", body)
+    if doc.get("amount", 0) <= 0:
+        raise ValueError("valor deve ser maior que zero")
+    doc["paid_count"] = 0
+    doc["finished"] = False
+    doc["id"] = store.new_id()
+    storage.insert("card_purchases", doc)
+    storage.insert("transactions", _purchase_tx(doc))
+    return doc
+
+
+def update_card_purchase(storage, purchase_id, body):
+    """Atualiza a compra e sincroniza a transação vinculada."""
+    existing = storage.get("card_purchases", purchase_id)
+    if existing is None:
+        raise ValueError("não encontrado")
+    patch = validate_doc("card_purchases", body, partial=True)
+    new = {**existing, **patch, "id": purchase_id}
+    storage.update("card_purchases", purchase_id, new)
+    _sync_purchase_tx(storage, new)
+    return new
+
+
 def pay_card_purchase(storage, purchase_id, account_id="", date=None):
     p = storage.get("card_purchases", purchase_id)
     if p is None:
@@ -859,21 +916,11 @@ def pay_card_purchase(storage, purchase_id, account_id="", date=None):
     p["paid_count"] = paid_count
     p["finished"] = paid_count >= int(p.get("installments", 1))
 
-    tx_id = _make_expense(
-        storage,
-        account_id,
-        {
-            "date": when,
-            "description": f"Cartão · {p.get('description', 'Compra')} ({paid_count}/{p.get('installments', 1)})",
-            "amount": monthly,
-            "category": p.get("category") or "Cartão de crédito",
-            "account_id": account_id,
-            "method": "card",
-            "card_id": purchase_id,
-        },
-    )
+    # Pagar a parcela NÃO cria uma nova despesa: a compra já virou transação
+    # (valor total) quando foi lançada. Aqui só marcamos a parcela como paga
+    # e registramos na trilha de auditoria.
     storage.update("card_purchases", purchase_id, p)
-    _record_payment(storage, "card", purchase_id, when, monthly, account_id, tx_id,
+    _record_payment(storage, "card", purchase_id, when, monthly, account_id, "",
                     p.get("description", "Compra"))
     return p
 
@@ -1165,6 +1212,9 @@ def delete_doc(storage, collection, doc_id, force=False):
         )
     if force:
         _detach(storage, collection, doc_id)
+    if collection == "card_purchases":
+        # A compra gera uma transação (valor total); ao excluir, remove junto.
+        _cascade_purchase(storage, doc_id)
     if collection == "transactions":
         _reverse_tx_movement(storage, doc)
     storage.delete(collection, doc_id)

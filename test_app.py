@@ -107,6 +107,15 @@ class FinanceAppTest(unittest.TestCase):
         self.assertEqual(compra["paid_count"], 0)
         self.assertFalse(compra["finished"])
 
+        # A compra vira imediatamente 1 transação com o valor TOTAL.
+        txs = self.client.get("/api/transactions").get_json()
+        self.assertEqual(len(txs), 1)
+        self.assertEqual(txs[0]["amount"], 300.0)
+        self.assertEqual(txs[0]["type"], "expense")
+        self.assertEqual(txs[0]["method"], "card")
+        self.assertEqual(txs[0]["card_id"], compra["id"])
+
+        # Pagar a parcela NÃO cria nova transação (a compra já lançou o gasto).
         res = self.client.post(f"/api/card_purchases/{compra['id']}/pay", json={"account_id": acc["id"]})
         self.assertEqual(res.status_code, 200)
         paid = res.get_json()
@@ -114,8 +123,6 @@ class FinanceAppTest(unittest.TestCase):
 
         txs = self.client.get("/api/transactions").get_json()
         self.assertEqual(len(txs), 1)
-        self.assertEqual(txs[0]["amount"], 100.0)
-        self.assertEqual(txs[0]["type"], "expense")
 
     def test_summary_networth(self):
         self._post("/api/accounts", {"name": "A", "balance": 1000})
@@ -453,22 +460,50 @@ class FinanceAppTest(unittest.TestCase):
         # 2º mês: 510 recorrentes + 850 financiamentos = 1360
         self.assertEqual(sep["balance"], 2000 + 2 * 1000 - 710 - 1360)
 
-    def test_unpay_purchase_reverts_and_removes_transaction(self):
+    def test_unpay_purchase_keeps_purchase_transaction(self):
         acc = self._post("/api/accounts", {"name": "Conta", "balance": 1000})
         card = self._post("/api/cards", {"name": "Cartao", "limit": 5000})
         p = self._post("/api/card_purchases", {
             "card_id": card["id"], "date": "2026-08-01", "description": "Compra",
             "category": "Lazer", "amount": 300, "installments": 3,
         })
-        self.client.post(f"/api/card_purchases/{p['id']}/pay", json={"account_id": acc["id"]})
+        # A compra já criou 1 transação do valor total.
         self.assertEqual(len(self.client.get("/api/transactions").get_json()), 1)
 
+        self.client.post(f"/api/card_purchases/{p['id']}/pay", json={"account_id": acc["id"]})
         res = self.client.post(f"/api/card_purchases/{p['id']}/unpay")
         self.assertEqual(res.status_code, 200)
         unp = res.get_json()
         self.assertEqual(unp["paid_count"], 0)
         self.assertFalse(unp["finished"])
+        # O estorno do pagamento não remove a transação da compra.
+        self.assertEqual(len(self.client.get("/api/transactions").get_json()), 1)
+
+    def test_delete_unpaid_purchase_removes_transaction(self):
+        card = self._post("/api/cards", {"name": "Cartao", "limit": 5000})
+        p = self._post("/api/card_purchases", {
+            "card_id": card["id"], "date": "2026-08-01", "description": "Compra",
+            "category": "Lazer", "amount": 100, "installments": 1,
+        })
+        self.assertEqual(len(self.client.get("/api/transactions").get_json()), 1)
+
+        res = self.client.delete(f"/api/card_purchases/{p['id']}")
+        self.assertEqual(res.status_code, 200)
         self.assertEqual(len(self.client.get("/api/transactions").get_json()), 0)
+
+    def test_update_card_purchase_syncs_transaction(self):
+        card = self._post("/api/cards", {"name": "Cartao", "limit": 5000})
+        p = self._post("/api/card_purchases", {
+            "card_id": card["id"], "date": "2026-08-01", "description": "Compra",
+            "category": "Lazer", "amount": 100, "installments": 1,
+        })
+        res = self.client.put(f"/api/card_purchases/{p['id']}", json={"amount": 150, "description": "Compra editada"})
+        self.assertEqual(res.status_code, 200)
+
+        txs = self.client.get("/api/transactions").get_json()
+        self.assertEqual(len(txs), 1)
+        self.assertEqual(txs[0]["amount"], 150.0)
+        self.assertEqual(txs[0]["description"], "Cartão · Compra editada")
 
     def test_unpay_financing_reverts_and_removes_transaction(self):
         acc = self._post("/api/accounts", {"name": "Conta", "balance": 1000})
@@ -606,7 +641,8 @@ class FinanceAppTest(unittest.TestCase):
         self.assertEqual(pays[0]["kind"], "card")
         self.assertEqual(pays[0]["ref_id"], p["id"])
         self.assertEqual(pays[0]["amount"], 100.0)
-        self.assertTrue(pays[0]["tx_id"])
+        # Pagar a parcela não gera transação (a compra já gerou a despesa).
+        self.assertFalse(pays[0]["tx_id"])
 
         # Pagar de novo no mesmo mês é bloqueado
         res = self.client.post(f"/api/card_purchases/{p['id']}/pay", json={"account_id": acc["id"]})

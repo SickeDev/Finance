@@ -6,12 +6,28 @@ __pycache__/
 
 # Dados locais e backups (ficam só na sua máquina)
 data/
+*.db
+*.sqlite
+*.sqlite3
 
 # Chaves e credenciais (NUNCA subir)
 credentials/
+*.pem
+*.p12
+*.jks
+serviceAccountKey*.json
+gemini_key*.txt
+
+# Variáveis de ambiente
+.env
+*.env
+.env.*
 
 # Exportações geradas
 exports/
+
+# Arquivos de backup local
+*_backup_*.json
 
 # Editor / SO
 .vscode/

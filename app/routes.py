@@ -93,19 +93,28 @@ def init_app(app):
             return jsonify(store.get_storage().list(collection))
 
         def api_create():
+            storage = store.get_storage()
             try:
-                doc = services.validate_doc(collection, _body())
+                if collection == "card_purchases":
+                    doc = services.create_card_purchase(storage, _body())
+                else:
+                    doc = services.validate_doc(collection, _body())
+                    doc["id"] = store.new_id()
+                    storage.insert(collection, doc)
             except ValueError as exc:
                 return _err(str(exc), 400)
-            if collection == "card_purchases":
-                doc["paid_count"] = 0
-                doc["finished"] = False
-            doc["id"] = store.new_id()
-            store.get_storage().insert(collection, doc)
             return jsonify(doc), 201
 
         def api_update(doc_id):
             storage = store.get_storage()
+            if collection == "card_purchases":
+                try:
+                    doc = services.update_card_purchase(storage, doc_id, _body())
+                except ValueError as exc:
+                    if str(exc) == "não encontrado":
+                        return _err(str(exc), 404)
+                    return _err(str(exc), 400)
+                return jsonify(doc)
             existing = storage.get(collection, doc_id)
             if existing is None:
                 return _err("não encontrado", 404)

@@ -80,8 +80,19 @@
           <span class="muted" style="font-size:12px;">Receita: entra nela · Despesa: sai dela</span>
         </div>
         <div>
-          <label>Método</label>
-          <select id="f-method"><option>Conta</option><option>Cartão</option><option>Pix</option><option>Dinheiro</option></select>
+          <label>Método / Tipo</label>
+          <select id="f-method" onchange="toggleCardFields()"><option>Conta</option><option>Cartão</option><option>Pix</option><option>Dinheiro</option></select>
+        </div>
+      </div>
+      <div class="form-grid" id="f-card-fields" style="display:none;">
+        <div>
+          <label>Cartão de crédito</label>
+          <select id="f-card"></select>
+        </div>
+        <div>
+          <label>Parcelas</label>
+          <input id="f-installments" type="number" min="1" max="48" value="1">
+          <span class="muted" style="font-size:12px;">Vira 1 transação com o valor total; parcelas seguem mês a mês na fatura.</span>
         </div>
       </div>
       <div class="form-actions">
@@ -95,19 +106,31 @@
 
 {% block scripts %}
 <script>
-let state = { accounts: [], boxes: [], categories: [], all: [], month: currentMonth(), type: "" };
+let state = { accounts: [], boxes: [], cards: [], purchases: [], categories: [], all: [], month: currentMonth(), type: "" };
 
 async function load() {
-  const [txs, accounts, boxes, meta] = await Promise.all([
-    api("/api/transactions"), api("/api/accounts"), api("/api/boxes"), api("/api/meta"),
+  const [txs, accounts, boxes, cards, purchases, meta] = await Promise.all([
+    api("/api/transactions"), api("/api/accounts"), api("/api/boxes"),
+    api("/api/cards"), api("/api/card_purchases"), api("/api/meta"),
   ]);
-  state = { ...state, accounts, boxes, categories: meta.categories, all: txs };
+  state = { ...state, accounts, boxes, cards, purchases, categories: meta.categories, all: txs };
 
   const catSelect = document.getElementById("f-category");
   catSelect.innerHTML = meta.categories.map((c) => `<option>${c}</option>`).join("");
+
+  const cardSelect = document.getElementById("f-card");
+  cardSelect.innerHTML = state.cards.length
+    ? state.cards.map((c) => `<option value="${c.id}">💳 ${escapeHtml(c.name)}</option>`).join("")
+    : `<option value="">(nenhum cartão cadastrado)</option>`;
+
   renderEntitySelect();
   renderSummary();
   renderTable();
+}
+
+function toggleCardFields() {
+  const on = document.getElementById("f-method").value === "Cartão";
+  document.getElementById("f-card-fields").style.display = on ? "" : "none";
 }
 
 function renderEntitySelect() {
@@ -173,7 +196,14 @@ function renderTable() {
   }).join("");
 }
 
+function cardLabel(t) {
+  const p = state.purchases.find((x) => x.id === t.card_id);
+  const c = p ? state.cards.find((x) => x.id === p.card_id) : null;
+  return c ? `💳 ${escapeHtml(c.name)}` : "💳 Cartão";
+}
+
 function entityLabel(t) {
+  if ((t.method === "card" || t.method === "Cartão") && t.card_id) return cardLabel(t);
   if (t.entity_type && t.entity_id) {
     const isBox = t.entity_type === "box";
     const list = isBox ? state.boxes : state.accounts;
@@ -199,6 +229,8 @@ function openTransaction() {
   renderEntitySelect();
   document.getElementById("f-entity").value = "";
   document.getElementById("f-method").value = "Conta";
+  document.getElementById("f-installments").value = 1;
+  toggleCardFields();
   openModal("tx-modal");
 }
 
@@ -216,7 +248,10 @@ function editTx(id) {
     ? `${t.entity_type}:${t.entity_id}`
     : (t.account_id ? `account:${t.account_id}` : "");
   document.getElementById("f-entity").value = entity;
-  document.getElementById("f-method").value = t.method || "Conta";
+  const isCard = t.method === "card" || t.method === "Cartão";
+  document.getElementById("f-method").value = isCard ? "Cartão" : (t.method || "Conta");
+  document.getElementById("f-installments").value = 1;
+  toggleCardFields();
   openModal("tx-modal");
 }
 
@@ -234,6 +269,33 @@ async function delTx(id) {
 document.getElementById("tx-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const id = document.getElementById("f-id").value;
+  const method = document.getElementById("f-method").value;
+  const date = document.getElementById("f-date").value || todayISO();
+  const description = document.getElementById("f-description").value;
+  const amount = Number(document.getElementById("f-amount").value) || 0;
+  const category = document.getElementById("f-category").value;
+
+  // Nova compra no cartão de crédito (tipo/método "Cartão"): lança a compra
+  // no cartão — vira 1 transação com o valor total e as parcelas na fatura.
+  const cardId = document.getElementById("f-card").value;
+  if (!id && method === "Cartão" && cardId) {
+    await api("/api/card_purchases", {
+      method: "POST",
+      body: {
+        card_id: cardId,
+        date,
+        description,
+        category,
+        amount,
+        installments: Number(document.getElementById("f-installments").value) || 1,
+      },
+    });
+    closeModal("tx-modal");
+    toast("Compra lançada no cartão");
+    load();
+    return;
+  }
+
   const ev = document.getElementById("f-entity").value;
   let entity_type = "", entity_id = "", account_id = "";
   if (ev) {
@@ -243,15 +305,15 @@ document.getElementById("tx-form").addEventListener("submit", async (e) => {
     if (et === "account") account_id = eid;
   }
   const payload = {
-    date: document.getElementById("f-date").value || todayISO(),
-    description: document.getElementById("f-description").value,
+    date,
+    description,
     type: document.getElementById("f-type").value,
-    amount: Number(document.getElementById("f-amount").value) || 0,
-    category: document.getElementById("f-category").value,
+    amount,
+    category,
     entity_type,
     entity_id,
     account_id,
-    method: document.getElementById("f-method").value,
+    method: method === "Cartão" ? "Cartão" : method,
   };
   if (id) await api(`/api/transactions/${id}`, { method: "PUT", body: payload });
   else await api("/api/transactions", { method: "POST", body: payload });
