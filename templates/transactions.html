@@ -373,7 +373,13 @@ async function aiExtract() {
   const url = mode === "receipt" ? "/api/ai/extract-receipt" : "/api/ai/extract-statement";
   try {
     const res = await fetch(url, { method: "POST", body: fd });
-    const data = await res.json();
+    const text = await res.text();
+    let data = {};
+    try {
+      data = JSON.parse(text);
+    } catch {
+      throw new Error("o servidor respondeu uma página HTML (rota não encontrada). Se estiver no Render, aguarde o deploy terminar e recarregue a página.");
+    }
     if (!res.ok) throw new Error(data.error || "Erro ao ler imagem");
     aiItems = data.items || [];
     renderAI();
