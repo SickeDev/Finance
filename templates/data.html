@@ -39,22 +39,23 @@
 </div>
 
 <div class="card" style="margin-top:16px;">
-  <h2>🤖 IA de leitura de imagem (Google Gemini)</h2>
+  <h2>🤖 IA de leitura de imagem</h2>
   <p class="muted" style="margin-bottom:12px;">
     Usada na página <b>Transações</b> para ler prints de extrato bancário e
-    comprovantes (Pix/recibo). Você precisa de uma chave gratuita do Google AI Studio
-    (<code>https://aistudio.google.com</code>). Coloque a chave abaixo e clique
-    em <b>Salvar chave</b>.
+    comprovantes (Pix/recibo). Provedor ativo: <b id="ai-provider">…</b>.
+    Coloque a chave abaixo e clique em <b>Salvar chave</b>.
   </p>
   <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
-    <input type="password" id="gemini-key" placeholder="Cole sua chave da API do Gemini" style="max-width:420px;">
-    <button class="btn" onclick="saveGeminiKey()">Salvar chave</button>
-    <span class="muted" id="gemini-status"></span>
+    <input type="password" id="ai-key" placeholder="Cole sua chave da API (OpenAI ou Gemini)" style="max-width:420px;">
+    <button class="btn" onclick="saveAIKey()">Salvar chave</button>
+    <span class="muted" id="ai-status"></span>
   </div>
   <div class="note" style="margin-top:12px;margin-bottom:0;">
-    <b>Alternativa:</b> defina a variável de ambiente <code>GEMINI_API_KEY</code>
-    antes de iniciar o servidor, ou crie o arquivo
-    <code>credentials/gemini_key.txt</code> com a chave dentro.
+    <b>Alternativa:</b> defina a variável de ambiente <code>OPENAI_API_KEY</code>
+    (OpenAI) ou <code>GEMINI_API_KEY</code> (Gemini) antes de iniciar o servidor,
+    ou crie o arquivo <code>credentials/openai_key.txt</code> /
+    <code>credentials/gemini_key.txt</code> com a chave dentro. O provedor ativo é
+    definido por <code>AI_PROVIDER</code> (<code>openai</code> ou <code>gemini</code>).
   </div>
 </div>
 
@@ -83,7 +84,7 @@ async function loadStorageInfo() {
   const el = document.getElementById("storage-info");
   el.innerHTML = `Armazenamento ativo: <b>${meta.storage}</b>` +
     (meta.storage_error ? `<div class="text-red">Falha no Firebase: ${escapeHtml(meta.storage_error)}</div>` : "");
-  loadGeminiStatus();
+  loadAIStatus();
   loadAdjustHistory();
 }
 
@@ -115,24 +116,26 @@ async function loadAdjustHistory() {
   }
 }
 
-async function loadGeminiStatus() {
+async function loadAIStatus() {
   try {
     const s = await api("/api/ai/status");
-    const el = document.getElementById("gemini-status");
+    const prov = s.provider === "openai" ? "OpenAI (GPT)" : "Google Gemini";
+    document.getElementById("ai-provider").textContent = prov;
+    const el = document.getElementById("ai-status");
     el.innerHTML = s.configured
       ? `<span class="tag green">✓ Chave configurada (${escapeHtml(s.model)})</span>`
       : `<span class="tag amber">Sem chave configurada</span>`;
   } catch (_) {}
 }
 
-async function saveGeminiKey() {
-  const key = document.getElementById("gemini-key").value.trim();
+async function saveAIKey() {
+  const key = document.getElementById("ai-key").value.trim();
   if (!key) return toast("Cole a chave da API primeiro", true);
   try {
     const r = await api("/api/ai/key", { method: "PUT", body: { key } });
-    document.getElementById("gemini-key").value = "";
+    document.getElementById("ai-key").value = "";
     toast("Chave da IA salva");
-    loadGeminiStatus();
+    loadAIStatus();
   } catch (err) {
     toast(err.message, true);
   }

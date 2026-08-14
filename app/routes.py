@@ -343,7 +343,13 @@ def init_app(app):
 
     @app.get("/api/ai/status")
     def api_ai_status():
-        return jsonify({"configured": ai.is_configured(), "model": ai.model_name()})
+        return jsonify(
+            {
+                "configured": ai.is_configured(),
+                "model": ai.model_name(),
+                "provider": ai.provider_name(),
+            }
+        )
 
     @app.put("/api/ai/key")
     def api_ai_set_key():
@@ -374,8 +380,9 @@ def init_app(app):
             return _err("arquivo vazio", 400)
         if not ai.is_configured():
             return _err(
-                "IA não configurada. Defina GEMINI_API_KEY (variável de ambiente) "
-                "ou preencha a chave na página Dados.",
+                "IA não configurada. Defina a variável de ambiente da chave "
+                "(OPENAI_API_KEY ou GEMINI_API_KEY) ou preencha a chave na "
+                "página Dados.",
                 400,
             )
         try:

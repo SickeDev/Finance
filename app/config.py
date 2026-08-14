@@ -13,8 +13,13 @@ LOCAL_DB_PATH = os.path.join(DATA_DIR, "local_db.json")
 
 EXPORT_DIR = os.path.join(BASE_DIR, "exports")
 
-# Chave da API do Google Gemini (IA de leitura de extrato e comprovante). Pode ser
-# informada pela variável de ambiente GEMINI_API_KEY ou no arquivo credentials/gemini_key.txt.
+# ---------------------------------------------------------------------------
+# IA de leitura de imagem (extrato e comprovante).
+# Provedor ativo: "openai" (padrão) ou "gemini". A chave pode vir da variável
+# de ambiente correspondente ou do arquivo em credentials/.
+# ---------------------------------------------------------------------------
+AI_PROVIDER = os.environ.get("AI_PROVIDER", "openai").strip().lower()
+
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
 GEMINI_MODEL_FALLBACKS = os.environ.get(
@@ -22,6 +27,14 @@ GEMINI_MODEL_FALLBACKS = os.environ.get(
     "gemini-flash-lite-latest,gemini-3.6-flash",
 ).split(",")
 GEMINI_KEY_FILE = os.path.join(BASE_DIR, "credentials", "gemini_key.txt")
+
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+OPENAI_MODEL_FALLBACKS = os.environ.get(
+    "OPENAI_MODEL_FALLBACKS",
+    "gpt-4o-mini,gpt-4.1-mini",
+).split(",")
+OPENAI_KEY_FILE = os.path.join(BASE_DIR, "credentials", "openai_key.txt")
 
 COLLECTIONS = [
     "accounts",

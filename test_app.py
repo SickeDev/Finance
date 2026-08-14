@@ -757,7 +757,7 @@ class FinanceAppTest(unittest.TestCase):
 
 
 class AIExtractTest(unittest.TestCase):
-    """Testes do fluxo de leitura de extrato com IA (Gemini).
+    """Testes do fluxo de leitura de imagem com IA (OpenAI como provedor ativo).
 
     A chamada de rede é substituída por um mock; não precisa de chave real.
     """
@@ -770,14 +770,17 @@ class AIExtractTest(unittest.TestCase):
         cls.app.config["TESTING"] = True
         cls.client = cls.app.test_client()
         from app import config as cfg
-        cls._orig_keyfile = cfg.GEMINI_KEY_FILE
-        cls.keyfile = os.path.join(cls.tmp, "gemini_key.txt")
-        cfg.GEMINI_KEY_FILE = cls.keyfile
+        cls._orig_provider = cfg.AI_PROVIDER
+        cls._orig_keyfile = cfg.OPENAI_KEY_FILE
+        cls.keyfile = os.path.join(cls.tmp, "openai_key.txt")
+        cfg.AI_PROVIDER = "openai"
+        cfg.OPENAI_KEY_FILE = cls.keyfile
 
     @classmethod
     def tearDownClass(cls):
         from app import config as cfg
-        cfg.GEMINI_KEY_FILE = cls._orig_keyfile
+        cfg.AI_PROVIDER = cls._orig_provider
+        cfg.OPENAI_KEY_FILE = cls._orig_keyfile
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
     def setUp(self):
@@ -786,7 +789,7 @@ class AIExtractTest(unittest.TestCase):
             fh.write("fake-key")
 
     def _payload(self, text):
-        return {"candidates": [{"content": {"parts": [{"text": text}]}}]}
+        return {"choices": [{"message": {"content": text}}]}
 
     def _extract(self, text):
         mocked = mock.Mock()
@@ -830,20 +833,18 @@ class AIExtractTest(unittest.TestCase):
 
         sent = {}
 
-        def fake_post(url, json=None, timeout=None):
+        def fake_post(url, headers=None, json=None, timeout=None):
             sent["url"] = url
-            sent["prompt"] = json["contents"][0]["parts"][0]["text"]
+            sent["prompt"] = json["messages"][0]["content"][0]["text"]
             return mock.Mock(
                 status_code=200,
                 text="",
                 json=lambda: {
-                    "candidates": [
-                        {"content": {"parts": [{"text": (
-                            '{"items": [{"date": "2026-08-14", "description": "PIX para João", '
-                            '"amount": 45.00, "type": "expense", "category": "alimentação", '
-                            '"method": "pix"}]}'
-                        )}]}}
-                    ]
+                    "choices": [{"message": {"content": (
+                        '{"items": [{"date": "2026-08-14", "description": "PIX para João", '
+                        '"amount": 45.00, "type": "expense", "category": "alimentação", '
+                        '"method": "pix"}]}'
+                    )}}]
                 },
             )
 
@@ -859,6 +860,40 @@ class AIExtractTest(unittest.TestCase):
         self.assertEqual(items[0]["amount"], 45.0)
         self.assertEqual(items[0]["method"], "pix")
         self.assertEqual(sent["prompt"], RECEIPT_PROMPT)
+
+    def test_gemini_provider_still_supported(self):
+        from app import config as cfg
+
+        payload = {
+            "candidates": [
+                {"content": {"parts": [{"text": (
+                    '{"items": [{"date": "2026-08-01", "description": "SALGADOS", '
+                    '"amount": 18.46, "type": "expense", "category": "alimentação"}]}'
+                )}]}}
+            ]
+        }
+        mocked = mock.Mock(status_code=200, text="", json=lambda: payload)
+        with (
+            mock.patch.object(cfg, "AI_PROVIDER", "gemini"),
+            mock.patch.object(cfg, "GEMINI_KEY_FILE", self.keyfile),
+            mock.patch("requests.post", return_value=mocked),
+        ):
+            res = self.client.post(
+                "/api/ai/extract-statement",
+                data={"image": (io.BytesIO(b"print"), "extrato.png")},
+                content_type="multipart/form-data",
+            )
+        self.assertEqual(res.status_code, 200, res.get_json())
+        self.assertEqual(res.get_json()["items"][0]["amount"], 18.46)
+
+    def test_openai_rejects_pdf(self):
+        res = self.client.post(
+            "/api/ai/extract-statement",
+            data={"image": (io.BytesIO(b"%PDF"), "extrato.pdf")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(res.status_code, 502, res.get_json())
+        self.assertIn("PDF não é aceito", res.get_json()["error"])
 
     def test_extract_without_key_returns_400(self):
         os.remove(self.keyfile)
@@ -880,7 +915,19 @@ class AIExtractTest(unittest.TestCase):
                 content_type="multipart/form-data",
             )
         self.assertEqual(res.status_code, 502)
-        self.assertIn("erro da API Gemini", res.get_json()["error"])
+        self.assertIn("erro da API", res.get_json()["error"])
+
+    def test_extract_quota_returns_502_with_clear_message(self):
+        with mock.patch("requests.post") as mocked:
+            mocked.return_value.status_code = 429
+            mocked.return_value.text = "quota exceeded"
+            res = self.client.post(
+                "/api/ai/extract-statement",
+                data={"image": (io.BytesIO(b"print"), "extrato.png")},
+                content_type="multipart/form-data",
+            )
+        self.assertEqual(res.status_code, 502)
+        self.assertIn("sem créditos", res.get_json()["error"])
 
     def test_confirm_rejects_invalid_account_and_empty(self):
         res = self.client.post("/api/ai/confirm-statement", json={"items": [], "account_id": ""})

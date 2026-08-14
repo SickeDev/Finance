@@ -1,11 +1,12 @@
-"""Leitura de extrato bancário com Google Gemini (API REST).
+"""Leitura de imagem (extrato e comprovante) com IA (OpenAI GPT ou Google Gemini).
 
-Recebe uma imagem (print/screenshot do extrato) e devolve uma lista estruturada
-de transações detectadas: data, descrição, categoria, valor e tipo.
+Recebe uma imagem (print/screenshot do extrato ou comprovante) e devolve uma
+lista estruturada de transações detectadas: data, descrição, categoria, valor
+e tipo.
 
-A chave da API vem de GEMINI_API_KEY (variável de ambiente) ou do arquivo
-credentials/gemini_key.txt. O modelo padrão é gemini-2.0-flash (configurável
-via GEMINI_MODEL).
+O provedor ativo é definido por AI_PROVIDER ("openai" ou "gemini"). A chave da
+API vem da variável de ambiente correspondente (OPENAI_API_KEY / GEMINI_API_KEY)
+ou dos arquivos credentials/openai_key.txt / credentials/gemini_key.txt.
 """
 
 import base64
@@ -76,16 +77,26 @@ class AIError(Exception):
     """Falha ao consultar a IA."""
 
 
+def provider_name():
+    return config.AI_PROVIDER
+
+
+def _key_spec():
+    """Devolve (chave_de_ambiente, caminho_do_arquivo) do provedor ativo."""
+    if config.AI_PROVIDER == "openai":
+        return config.OPENAI_API_KEY, config.OPENAI_KEY_FILE
+    return config.GEMINI_API_KEY, config.GEMINI_KEY_FILE
+
+
 def _read_key():
-    key = config.GEMINI_API_KEY
-    if key:
-        return key
+    env_key, file_path = _key_spec()
+    if env_key:
+        return env_key
     try:
-        with open(config.GEMINI_KEY_FILE, "r", encoding="utf-8") as fh:
-            key = fh.read().strip()
+        with open(file_path, "r", encoding="utf-8") as fh:
+            return fh.read().strip()
     except OSError:
         return ""
-    return key
 
 
 def is_configured():
@@ -93,14 +104,17 @@ def is_configured():
 
 
 def save_key(key):
-    """Persiste a chave da API no arquivo credentials/gemini_key.txt."""
-    os.makedirs(os.path.dirname(config.GEMINI_KEY_FILE), exist_ok=True)
-    with open(config.GEMINI_KEY_FILE, "w", encoding="utf-8") as fh:
+    """Persiste a chave do provedor ativo no arquivo credentials/."""
+    _, file_path = _key_spec()
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    with open(file_path, "w", encoding="utf-8") as fh:
         fh.write((key or "").strip())
     return key
 
 
 def model_name():
+    if config.AI_PROVIDER == "openai":
+        return config.OPENAI_MODEL
     return config.GEMINI_MODEL
 
 
@@ -191,17 +205,107 @@ def _normalize_items(payload):
 
 
 def extract_statement(image_bytes, filename=""):
-    """Envia a imagem do extrato ao Gemini e devolve as transações normalizadas."""
-    text = _call_gemini(image_bytes, filename, PROMPT)
-    payload = _extract_json(text)
-    return _normalize_items(payload)
+    """Envia a imagem do extrato à IA ativa e devolve as transações normalizadas."""
+    return _call_ai(image_bytes, filename, PROMPT)
 
 
 def extract_receipt(image_bytes, filename=""):
-    """Envia a imagem do comprovante ao Gemini e devolve a transação normalizada."""
-    text = _call_gemini(image_bytes, filename, RECEIPT_PROMPT)
+    """Envia a imagem do comprovante à IA ativa e devolve a transação normalizada."""
+    return _call_ai(image_bytes, filename, RECEIPT_PROMPT)
+
+
+def _call_ai(image_bytes, filename="", prompt=PROMPT):
+    """Chama o provedor ativo e normaliza a lista de itens."""
+    if config.AI_PROVIDER == "openai":
+        text = _call_openai(image_bytes, filename, prompt)
+    else:
+        text = _call_gemini(image_bytes, filename, prompt)
     payload = _extract_json(text)
     return _normalize_items(payload)
+
+
+def _image_mime(filename):
+    lower = (filename or "").lower()
+    if lower.endswith(".png"):
+        return "image/png"
+    if lower.endswith(".webp"):
+        return "image/webp"
+    if lower.endswith(".gif"):
+        return "image/gif"
+    if lower.endswith(".bmp"):
+        return "image/bmp"
+    if lower.endswith(".pdf"):
+        return "application/pdf"
+    return "image/jpeg"
+
+
+def _call_openai(image_bytes, filename="", prompt=PROMPT):
+    """Envia a imagem ao OpenAI (chat completions, visão) e devolve o texto."""
+    key = _read_key()
+    if not key:
+        raise AIError("chave da IA não configurada")
+
+    mime = _image_mime(filename)
+    if mime == "application/pdf":
+        raise AIError("PDF não é aceito pelo OpenAI — envie um print/imagem do extrato ou comprovante")
+    if mime not in ("image/png", "image/jpeg", "image/webp", "image/gif"):
+        raise AIError("formato de imagem não suportado pelo OpenAI (use PNG/JPG/WEBP/GIF)")
+
+    data_b64 = base64.b64encode(image_bytes).decode()
+    body = {
+        "model": config.OPENAI_MODEL,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data_b64}"}},
+                ],
+            }
+        ],
+        "temperature": 0,
+    }
+    models = [config.OPENAI_MODEL] + list(config.OPENAI_MODEL_FALLBACKS)
+    last_err = None
+    for model in models:
+        body["model"] = model
+        try:
+            res = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {key}"},
+                json=body,
+                timeout=60,
+            )
+        except requests.RequestException as exc:
+            last_err = f"falha de rede ao consultar a IA: {exc}"
+            continue
+
+        if res.status_code == 200:
+            break
+
+        detail = res.text[:300]
+        last_err = f"erro da API OpenAI ({model}, HTTP {res.status_code}): {detail}"
+        if res.status_code in (429, 404):
+            continue
+        raise AIError(last_err)
+    else:
+        if last_err and "HTTP 429" in last_err:
+            raise AIError(
+                "sem créditos na conta da OpenAI (HTTP 429). Adicione créditos em "
+                "https://platform.openai.com/settings/organization/billing ou use "
+                "outra chave."
+            )
+        raise AIError(last_err)
+
+    try:
+        data = res.json()
+    except ValueError as exc:
+        raise AIError("resposta inválida da API OpenAI") from None
+
+    choices = data.get("choices") or []
+    if not choices:
+        raise AIError("a IA não retornou conteúdo (revise a imagem e tente de novo)")
+    return str((choices[0].get("message") or {}).get("content") or "")
 
 
 def _call_gemini(image_bytes, filename="", prompt=PROMPT):
@@ -210,19 +314,7 @@ def _call_gemini(image_bytes, filename="", prompt=PROMPT):
     if not key:
         raise AIError("chave da IA não configurada")
 
-    mime = "image/jpeg"
-    lower = filename.lower()
-    if lower.endswith(".png"):
-        mime = "image/png"
-    elif lower.endswith(".webp"):
-        mime = "image/webp"
-    elif lower.endswith(".gif"):
-        mime = "image/gif"
-    elif lower.endswith(".bmp"):
-        mime = "image/bmp"
-    elif lower.endswith((".pdf",)):
-        mime = "application/pdf"
-
+    mime = _image_mime(filename)
     data_b64 = base64.b64encode(image_bytes).decode()
     parts = [
         {"text": prompt},
