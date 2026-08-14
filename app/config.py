@@ -15,10 +15,10 @@ EXPORT_DIR = os.path.join(BASE_DIR, "exports")
 
 # ---------------------------------------------------------------------------
 # IA de leitura de imagem (extrato e comprovante).
-# Provedor ativo: "openai" (padrão) ou "gemini". A chave pode vir da variável
-# de ambiente correspondente ou do arquivo em credentials/.
+# Provedor ativo: "openai" ou "gemini" (padrão, tem plano gratuito). A chave
+# vem da variável de ambiente correspondente ou do arquivo em credentials/.
 # ---------------------------------------------------------------------------
-AI_PROVIDER = os.environ.get("AI_PROVIDER", "openai").strip().lower()
+AI_PROVIDER = os.environ.get("AI_PROVIDER", "gemini").strip().lower()
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
