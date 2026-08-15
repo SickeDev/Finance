@@ -337,6 +337,27 @@ class FinanceAppTest(unittest.TestCase):
         self.assertEqual(self._get("accounts", acc["id"])["balance"], 1000)
         self.assertEqual(self._get("boxes", box["id"])["balance"], 50)
 
+    def test_transaction_failed_edit_does_not_corrupt_balance(self):
+        box = self._post("/api/boxes", {"name": "Reserva", "balance": 50})
+        tx = self._post("/api/transactions", {
+            "date": "2026-08-10", "description": "Aluguel", "amount": 40,
+            "type": "expense", "category": "Moradia",
+            "entity_type": "box", "entity_id": box["id"],
+        })
+        self.assertEqual(self._get("boxes", box["id"])["balance"], 10)
+
+        # edição para valor maior que o saldo deve falhar SEM alterar o saldo
+        res = self.client.put(f"/api/transactions/{tx['id']}", json={
+            "amount": 300, "type": "expense",
+            "entity_type": "box", "entity_id": box["id"],
+        })
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("saldo insuficiente", res.get_json()["error"])
+        self.assertEqual(self._get("boxes", box["id"])["balance"], 10)
+
+        txs = self.client.get("/api/transactions").get_json()
+        self.assertEqual(txs[0]["amount"], 40.0)
+
     def test_transaction_delete_reverses_balance(self):
         box = self._post("/api/boxes", {"name": "Reserva", "balance": 100})
         tx = self._post("/api/transactions", {
@@ -490,6 +511,30 @@ class FinanceAppTest(unittest.TestCase):
         res = self.client.delete(f"/api/card_purchases/{p['id']}")
         self.assertEqual(res.status_code, 200)
         self.assertEqual(len(self.client.get("/api/transactions").get_json()), 0)
+
+    def test_create_card_purchase_rejects_unknown_card(self):
+        res = self.client.post("/api/card_purchases", json={
+            "card_id": "nao-existe", "date": "2026-08-01", "description": "Compra",
+            "amount": 100, "installments": 1,
+        })
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("cartão não encontrado", res.get_json()["error"])
+        self.assertEqual(len(self.client.get("/api/card_purchases").get_json()), 0)
+        self.assertEqual(len(self.client.get("/api/transactions").get_json()), 0)
+
+    def test_update_card_purchase_rejects_unknown_card(self):
+        card = self._post("/api/cards", {"name": "Cartao", "limit": 5000})
+        p = self._post("/api/card_purchases", {
+            "card_id": card["id"], "date": "2026-08-01", "description": "Compra",
+            "category": "Lazer", "amount": 100, "installments": 1,
+        })
+        res = self.client.put(f"/api/card_purchases/{p['id']}", json={"card_id": "nao-existe"})
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("cartão não encontrado", res.get_json()["error"])
+
+        purchases = self.client.get("/api/card_purchases").get_json()
+        p2 = next(x for x in purchases if x["id"] == p["id"])
+        self.assertEqual(p2["card_id"], card["id"])
 
     def test_update_card_purchase_syncs_transaction(self):
         card = self._post("/api/cards", {"name": "Cartao", "limit": 5000})
@@ -823,10 +868,33 @@ class AIExtractTest(unittest.TestCase):
         acc = self.client.post("/api/accounts", json={"name": "Nubank", "balance": 0}).get_json()
         res = self.client.post(
             "/api/ai/confirm-statement",
-            json={"items": items, "account_id": acc["id"]},
+            json={"items": items, "entity_type": "account", "entity_id": acc["id"]},
         )
         self.assertEqual(res.status_code, 200, res.get_json())
         self.assertEqual(res.get_json()["created"], 2)
+
+        acc2 = next(a for a in self.client.get("/api/accounts").get_json() if a["id"] == acc["id"])
+        self.assertEqual(acc2["balance"], 4987.5)
+
+    def test_confirm_into_box_updates_balance(self):
+        box = self.client.post("/api/boxes", json={"name": "Reserva", "balance": 100}).get_json()
+        items = [
+            {"date": "2026-08-05", "description": "Rendimento", "amount": 50, "type": "income"},
+            {"date": "2026-08-06", "description": "Saque", "amount": 30, "type": "expense"},
+        ]
+        res = self.client.post(
+            "/api/ai/confirm-statement",
+            json={"items": items, "entity_type": "box", "entity_id": box["id"]},
+        )
+        self.assertEqual(res.status_code, 200, res.get_json())
+        self.assertEqual(res.get_json()["created"], 2)
+        box2 = next(b for b in self.client.get("/api/boxes").get_json() if b["id"] == box["id"])
+        self.assertEqual(box2["balance"], 120)
+
+        txs = self.client.get("/api/transactions").get_json()
+        self.assertEqual(len(txs), 2)
+        self.assertTrue(all(t["entity_type"] == "box" for t in txs))
+        self.assertTrue(all(t["entity_id"] == box["id"] for t in txs))
 
     def test_extract_receipt_uses_receipt_flow(self):
         from app.ai import RECEIPT_PROMPT
@@ -935,7 +1003,7 @@ class AIExtractTest(unittest.TestCase):
 
         res = self.client.post("/api/ai/confirm-statement", json={"items": [{"date": "2026-08-05", "description": "x", "amount": 1}], "account_id": "nao-existe"})
         self.assertEqual(res.status_code, 400)
-        self.assertIn("conta não encontrada", res.get_json()["error"])
+        self.assertIn("entidade não encontrada", res.get_json()["error"])
 
     def test_parse_handles_br_formats(self):
         from app.ai import _normalize_items

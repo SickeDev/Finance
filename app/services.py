@@ -686,7 +686,7 @@ def _check_sufficient(ent, delta):
         raise ValueError(f"saldo insuficiente em {name} ({current:.2f})")
 
 
-def _apply_tx_movement(storage, tx):
+def _apply_tx_movement(storage, tx, allow_overdraft=False):
     """Aplica (ou aplica de novo) o efeito de saldo da transação."""
     movement = _tx_movement(tx)
     if movement is None:
@@ -695,7 +695,8 @@ def _apply_tx_movement(storage, tx):
     ent = storage.get(coll, eid)
     if ent is None:
         return
-    _check_sufficient(ent, delta)
+    if not allow_overdraft:
+        _check_sufficient(ent, delta)
     ent["balance"] = M.round2(float(ent.get("balance") or 0) + delta)
     storage.update(coll, eid, ent)
 
@@ -713,7 +714,7 @@ def _reverse_tx_movement(storage, tx):
     storage.update(coll, eid, ent)
 
 
-def create_transaction(storage, body):
+def create_transaction(storage, body, allow_overdraft=False):
     """Cria uma transação manual, movendo o saldo da conta/caixinha escolhida."""
     doc = validate_doc("transactions", body)
     if doc.get("amount", 0) <= 0:
@@ -733,7 +734,7 @@ def create_transaction(storage, body):
         if etype == "account":
             doc["account_id"] = eid
         if doc.get("type") != "transfer":
-            _apply_tx_movement(storage, doc)
+            _apply_tx_movement(storage, doc, allow_overdraft=allow_overdraft)
 
     doc["id"] = store.new_id()
     storage.insert("transactions", doc)
@@ -751,32 +752,49 @@ def update_transaction(storage, tx_id, body):
     old_movement = _tx_movement(existing)
     new_movement = _tx_movement(new)
 
-    # Carrega cada entidade uma única vez (no Firestore cada get cria um dict
-    # novo, então reutilizamos o mesmo objeto quando origem e destino batem).
-    entities = {}
+    # Trabalha com cópias em memória: se a validação falhar, nada é gravado
+    # (o LocalStorage.get devolve o dict do cache ao vivo, e mutá-lo antes de
+    # validar corromperia o saldo em caso de erro).
+    working = {}
 
     def fetch(coll, eid):
-        if (coll, eid) not in entities:
-            entities[(coll, eid)] = storage.get(coll, eid)
-        return entities[(coll, eid)]
+        key = (coll, eid)
+        if key not in working:
+            ent = storage.get(coll, eid)
+            if ent is None:
+                working[key] = None
+            else:
+                working[key] = {
+                    "doc": dict(ent),
+                    "balance": float(ent.get("balance") or 0),
+                }
+        return working[key]
 
     # Reverte o efeito antigo em memória antes de validar o novo.
     if old_movement:
         coll, eid, delta = old_movement
-        ent = fetch(coll, eid)
-        if ent is not None:
-            ent["balance"] = M.round2(float(ent.get("balance") or 0) - delta)
+        w = fetch(coll, eid)
+        if w is not None:
+            w["balance"] = M.round2(w["balance"] - delta)
 
     if new_movement:
         coll, eid, delta = new_movement
-        ent = fetch(coll, eid)
-        if ent is None:
+        w = fetch(coll, eid)
+        if w is None:
             raise ValueError("entidade não encontrada")
-        _check_sufficient(ent, delta)
-        ent["balance"] = M.round2(float(ent.get("balance") or 0) + delta)
+        if delta < 0 and w["balance"] < -delta - 0.005:
+            name = w["doc"].get("name") or "entidade"
+            raise ValueError(f"saldo insuficiente em {name} ({w['balance']:.2f})")
+        w["balance"] = M.round2(w["balance"] + delta)
 
-    if entities:
-        storage.apply_updates([(c, e) for (c, _eid), e in entities.items()])
+    # Validações passaram: grava tudo de uma vez (escrita atômica).
+    to_update = []
+    for (coll, _eid), w in working.items():
+        if w is not None:
+            w["doc"]["balance"] = w["balance"]
+            to_update.append((coll, w["doc"]))
+    if to_update:
+        storage.apply_updates(to_update)
 
     if new.get("entity_type") == "account" and new.get("entity_id"):
         new["account_id"] = new["entity_id"]
@@ -879,6 +897,8 @@ def create_card_purchase(storage, body):
     doc = validate_doc("card_purchases", body)
     if doc.get("amount", 0) <= 0:
         raise ValueError("valor deve ser maior que zero")
+    if storage.get("cards", doc.get("card_id")) is None:
+        raise ValueError("cartão não encontrado")
     doc["paid_count"] = 0
     doc["finished"] = False
     doc["id"] = store.new_id()
@@ -893,6 +913,8 @@ def update_card_purchase(storage, purchase_id, body):
     if existing is None:
         raise ValueError("não encontrado")
     patch = validate_doc("card_purchases", body, partial=True)
+    if patch.get("card_id") and storage.get("cards", patch["card_id"]) is None:
+        raise ValueError("cartão não encontrado")
     new = {**existing, **patch, "id": purchase_id}
     storage.update("card_purchases", purchase_id, new)
     _sync_purchase_tx(storage, new)

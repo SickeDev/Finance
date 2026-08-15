@@ -347,13 +347,18 @@ document.addEventListener("DOMContentLoaded", () => {
 let aiItems = [];
 
 async function loadAI() {
-  const [accounts, status] = await Promise.all([api("/api/accounts"), api("/api/ai/status").catch(() => ({ configured: false }))]);
-  const sel = document.getElementById("ai-account");
-  sel.innerHTML = `<option value="">(sem conta)</option>` +
-    accounts.map((a) => `<option value="${a.id}">${escapeHtml(a.name)}</option>`).join("");
+  const [accounts, boxes, status] = await Promise.all([
+    api("/api/accounts"),
+    api("/api/boxes").catch(() => []),
+    api("/api/ai/status").catch(() => ({ configured: false })),
+  ]);
+  const opts = `<option value="">(sem conta)</option>` +
+    accounts.map((a) => `<option value="account:${a.id}">🏦 ${escapeHtml(a.name)}</option>`).join("") +
+    boxes.map((b) => `<option value="box:${b.id}">🎯 ${escapeHtml(b.name)}</option>`).join("");
+  document.getElementById("ai-account").innerHTML = opts;
   const st = document.getElementById("ai-status");
   if (!status.configured) {
-    st.innerHTML = `<span class="tag amber">IA sem chave — defina GEMINI_API_KEY</span>`;
+    st.innerHTML = `<span class="tag amber">IA sem chave — defina GEMINI_API_KEY ou OPENAI_API_KEY</span>`;
   } else {
     st.textContent = `IA pronta (${status.model})`;
   }
@@ -429,9 +434,10 @@ function renderAI() {
       <span class="muted">Lançar em: escolha a conta acima</span>
     </div>`;
   const sel = document.getElementById("ai-target-account");
-  api("/api/accounts").then((list) => {
+  Promise.all([api("/api/accounts"), api("/api/boxes").catch(() => [])]).then(([accounts, boxes]) => {
     sel.innerHTML = `<option value="">(sem conta)</option>` +
-      list.map((a) => `<option value="${a.id}">${escapeHtml(a.name)}</option>`).join("");
+      accounts.map((a) => `<option value="account:${a.id}">🏦 ${escapeHtml(a.name)}</option>`).join("") +
+      boxes.map((b) => `<option value="box:${b.id}">🎯 ${escapeHtml(b.name)}</option>`).join("");
     const current = document.getElementById("ai-account").value;
     if (current) sel.value = current;
   });
@@ -442,12 +448,18 @@ async function aiConfirm() {
     .filter((c) => c.checked)
     .map((c) => aiItems[Number(c.dataset.idx)]);
   if (!checks.length) return toast("Nada selecionado para lançar", true);
-  const accountId = document.getElementById("ai-target-account").value;
+  const raw = document.getElementById("ai-target-account").value;
+  let entity_type = "", entity_id = "";
+  if (raw) {
+    const [et, eid] = raw.split(":");
+    entity_type = et;
+    entity_id = eid;
+  }
   try {
-    const r = await api("/api/ai/confirm-statement", { method: "POST", body: { items: checks, account_id: accountId } });
+    const r = await api("/api/ai/confirm-statement", { method: "POST", body: { items: checks, entity_type, entity_id } });
     toast(`${r.created} transação(ões) lançada(s)`);
     aiItems = [];
-    document.getElementById("ai-result").innerHTML = `<div class="note" style="border-left-color:var(--green);margin-bottom:0;">✔ ${r.created} transação(ões) criadas${accountId ? " na conta selecionada" : " sem conta"}.</div>`;
+    document.getElementById("ai-result").innerHTML = `<div class="note" style="border-left-color:var(--green);margin-bottom:0;">✔ ${r.created} transação(ões) criadas${raw ? " e saldo atualizado" : ""}.</div>`;
     load();
   } catch (err) {
     toast(err.message, true);

@@ -396,36 +396,38 @@ def init_app(app):
         storage = store.get_storage()
         body = _body()
         items = body.get("items") or []
-        account_id = body.get("account_id") or ""
+        entity_type = (body.get("entity_type") or "account")
+        entity_id = body.get("entity_id") or body.get("account_id") or ""
         if not isinstance(items, list) or not items:
             return _err("nenhum item para lançar", 400)
-        if account_id and storage.get("accounts", account_id) is None:
-            return _err("conta não encontrada", 400)
+        if entity_id:
+            coll = config.ENTITY_TYPES.get(entity_type)
+            if coll not in ("accounts", "boxes") or storage.get(coll, entity_id) is None:
+                return _err("entidade não encontrada", 400)
 
         created = 0
         for raw in items:
+            amount = abs(float(raw.get("amount") or 0))
+            if amount <= 0:
+                continue
             try:
-                tx = services.validate_doc(
-                    "transactions",
-                    {
-                        "date": raw.get("date") or services.today().isoformat(),
-                        "description": raw.get("description") or "Transação (IA)",
-                        "category": raw.get("category") or "Outros",
-                        "amount": abs(float(raw.get("amount") or 0)),
-                        "type": raw.get("type") in ("income", "transfer")
-                        and "income"
-                        or "expense",
-                        "account_id": account_id,
-                        "method": raw.get("method") or "Pix",
-                    },
-                )
+                payload = {
+                    "date": raw.get("date") or services.today().isoformat(),
+                    "description": raw.get("description") or "Transação (IA)",
+                    "category": raw.get("category") or "Outros",
+                    "amount": amount,
+                    "type": raw.get("type") in ("income", "transfer")
+                    and "income"
+                    or "expense",
+                    "method": raw.get("method") or "Pix",
+                }
+                if entity_id:
+                    payload["entity_type"] = entity_type
+                    payload["entity_id"] = entity_id
+                services.create_transaction(storage, payload, allow_overdraft=True)
+                created += 1
             except ValueError as exc:
                 return _err(f"item inválido: {exc}", 400)
-            if tx["amount"] <= 0:
-                continue
-            tx["id"] = store.new_id()
-            storage.insert("transactions", tx)
-            created += 1
 
         return jsonify({"ok": True, "created": created})
 
